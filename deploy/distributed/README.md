@@ -90,6 +90,8 @@ calc   unix  healthy  2ms
 
 `POST /api/v1/admin/topology/{name}/trigger` asks one of them to do its pass now instead of
 waiting for the next tick — the durable path is still the queues, this is the impatient one.
+The System screen offers the same thing as "Do it now" on each worker card, and shows the
+worker's answer as a notice: the pass has been queued, not completed.
 The API itself is always in the list, because a console that hides the process it is talking
 to cannot show that process failing.
 
