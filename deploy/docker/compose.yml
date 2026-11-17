@@ -1,0 +1,34 @@
+# Run a complete Nodus instance in one container.
+#
+#   docker compose -f deploy/docker/compose.yml up --build
+#
+# The image holds the server, the server-rendered shell, the client bundle, nginx and
+# Postgres. State lives in the two named volumes, so `up --build` keeps the instance.
+services:
+  nodus:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.aio
+    image: nodus:aio
+    container_name: nodus-aio
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      NODUS_DOMAIN: ${NODUS_DOMAIN:-localhost}
+      NODUS_BASE_URL: ${NODUS_BASE_URL:-http://localhost:8080}
+      NODUS_TITLE: ${NODUS_TITLE:-Nodus}
+      NODUS_DESCRIPTION: ${NODUS_DESCRIPTION:-}
+      NODUS_CONTACT_EMAIL: ${NODUS_CONTACT_EMAIL:-}
+      NODUS_AUTH_SECURE_COOKIES: ${NODUS_AUTH_SECURE_COOKIES:-false}
+      NODUS_BOOTSTRAP_EMAIL: ${NODUS_BOOTSTRAP_EMAIL:-}
+      NODUS_BOOTSTRAP_USERNAME: ${NODUS_BOOTSTRAP_USERNAME:-}
+      NODUS_BOOTSTRAP_PASSWORD: ${NODUS_BOOTSTRAP_PASSWORD:-}
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      - nodus-data:/var/lib/nodus
+      - nodus-postgres:/var/lib/postgresql/data
+
+volumes:
+  nodus-data:
+  nodus-postgres:
