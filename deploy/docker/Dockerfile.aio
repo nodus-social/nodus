@@ -68,7 +68,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      postgresql-15 caddy curl ca-certificates tini \
+      postgresql-15 caddy curl ca-certificates tini procps \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=server /src/nodus-backend/target/release/nodus-api /usr/local/bin/nodus-api
@@ -79,6 +79,9 @@ COPY --from=server /src/nodus-backend/target/release/nodus-calc /usr/local/bin/n
 COPY --from=shell /src/web/target/release/nodus-web-server /usr/local/bin/nodus-web-server
 COPY --from=bundle /src/web/dist/ /srv/nodus/
 COPY deploy/docker/Caddyfile /etc/caddy/Caddyfile
+# The shipped config is formatted once here instead of at every start: Caddy warns about
+# an unformatted file on the first line of its log, which reads like a fault.
+RUN caddy fmt --overwrite /etc/caddy/Caddyfile
 COPY deploy/docker/entrypoint.sh /usr/local/bin/entrypoint
 
 RUN useradd --system --create-home --home-dir /var/lib/nodus nodus \
