@@ -1,0 +1,76 @@
+# syntax=docker/dockerfile:1
+
+# One image that runs a complete Nodus instance: Postgres, the server, the
+# server-rendered shell and the client bundle, behind one nginx listener.
+#
+#   docker build -f deploy/docker/Dockerfile.aio -t nodus:aio .
+#   docker run -p 8080:8080 -e NODUS_DOMAIN=nodus.example -e NODUS_BASE_URL=https://nodus.example \
+#     -v nodus-data:/var/lib/nodus nodus:aio
+#
+# The binary stages build on bookworm because the runtime is bookworm; the bundle stage needs
+# node and trunk, and its output is wasm, which has no libc to mismatch.
+
+ARG RUST_VERSION=1-bookworm
+
+FROM rust:${RUST_VERSION} AS server
+WORKDIR /src
+COPY nodus-backend/ /src/nodus-backend/
+WORKDIR /src/nodus-backend
+RUN cargo build --release --locked --bin nodus-server
+
+FROM rust:${RUST_VERSION} AS shell
+WORKDIR /src
+COPY web/ /src/web/
+WORKDIR /src/web
+RUN cargo build --release --locked --bin nodus-web-server
+
+FROM rust:${RUST_VERSION} AS bundle
+# bookworm's nodejs is new enough for esbuild and tailwind; trunk is a pinned prebuilt
+# release so the stage does not spend ten minutes compiling it.
+ARG TRUNK_VERSION=0.22.1
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends nodejs npm curl ca-certificates xz-utils \
+ && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL "https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" \
+      | tar -xz -C /usr/local/bin trunk
+RUN rustup target add wasm32-unknown-unknown
+WORKDIR /src
+COPY web/ /src/web/
+WORKDIR /src/web
+RUN npm ci --no-audit --no-fund
+RUN node js/build.mjs && node js/css.mjs && trunk build --release
+
+FROM debian:bookworm-slim AS runtime
+ENV DEBIAN_FRONTEND=noninteractive \
+    PGDATA=/var/lib/postgresql/data \
+    NODUS_LISTEN=127.0.0.1:3002 \
+    NODUS_ASSET_DIR=/srv/nodus \
+    NODUS_SESSIONS=/var/lib/nodus/sessions.json \
+    NODUS_BIND=127.0.0.1:3001 \
+    NODUS_DATABASE_URL=postgres://nodus@127.0.0.1/nodus \
+    NODUS_MEDIA_DIR=/var/lib/nodus/media \
+    NODUS_MEDIA_VARIANTS_DIR=/var/lib/nodus/media/variants
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      postgresql-15 nginx-light curl ca-certificates tini \
+ && rm -rf /var/lib/apt/lists/* \
+ && rm -f /etc/nginx/sites-enabled/default
+
+COPY --from=server /src/nodus-backend/target/release/nodus-server /usr/local/bin/nodus-backend
+COPY --from=shell /src/web/target/release/nodus-web-server /usr/local/bin/nodus-web-server
+COPY --from=bundle /src/web/dist/ /srv/nodus/
+COPY deploy/docker/nginx.conf /etc/nginx/nginx.conf
+COPY deploy/docker/entrypoint.sh /usr/local/bin/entrypoint
+
+RUN useradd --system --create-home --home-dir /var/lib/nodus nodus \
+ && mkdir -p /var/lib/nodus/media/variants /run/postgresql \
+ && chown -R nodus:nodus /var/lib/nodus /srv/nodus \
+ && chown postgres:postgres /var/lib/postgresql /run/postgresql \
+ && chmod 0755 /usr/local/bin/entrypoint
+
+EXPOSE 8080
+VOLUME ["/var/lib/nodus", "/var/lib/postgresql/data"]
+HEALTHCHECK --interval=30s --timeout=3s --start-period=40s \
+  CMD curl -fsS http://127.0.0.1:8080/healthz || exit 1
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint"]
