@@ -6,6 +6,14 @@ export NODUS_DOMAIN="${NODUS_DOMAIN:-localhost}"
 export NODUS_BASE_URL="${NODUS_BASE_URL:-http://localhost:8080}"
 DB_PASSWORD_FILE="/var/lib/nodus/db-password"
 
+# Debian keeps the cluster binaries out of PATH: /usr/lib/postgresql/<major>/bin.
+for candidate in /usr/lib/postgresql/*/bin; do
+    if [[ -x "${candidate}/initdb" ]]; then
+        export PATH="${candidate}:${PATH}"
+        break
+    fi
+done
+
 log() { printf '[aio] %s\n' "$*"; }
 
 # The database password is generated once and kept beside the volume, so a restart keeps
@@ -27,7 +35,7 @@ if [[ ! -s "${PGDATA}/PG_VERSION" ]]; then
 fi
 
 log "starting postgres"
-su postgres -c "pg_ctl -D ${PGDATA} -l /var/log/postgres.log -o '-c listen_addresses=127.0.0.1' start" >/dev/null
+su postgres -c "pg_ctl -D ${PGDATA} -l /var/lib/postgresql/postgres.log -o '-c listen_addresses=127.0.0.1' start" >/dev/null
 until su postgres -c "pg_isready -h 127.0.0.1" >/dev/null 2>&1; do sleep 0.2; done
 
 if ! su postgres -c "psql -tAc \"SELECT 1 FROM pg_roles WHERE rolname='nodus'\"" | grep -qx 1; then
@@ -61,7 +69,8 @@ su nodus -s /bin/bash -c "/usr/local/bin/nodus-web-server" &
 pids+=("$!")
 
 log "starting nginx on 8080"
-nginx -g 'daemon off;' &
+# The config already says `daemon off`, so -g would make it a duplicate directive.
+nginx &
 pids+=("$!")
 
 # tini forwards the stop signal; the first child to exit ends the container so a crash is

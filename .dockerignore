@@ -1,0 +1,18 @@
+# Build output and tool caches never belong in a build context: they are large, they belong to
+# the host's libc, and a stale `dist/` would silently shadow the stage's own bundle.
+**
+!nodus-backend/
+!sdk/
+!server-sdk/
+!web/
+!deploy/
+!rust-toolchain.toml
+
+**/target/
+**/target-bookworm/
+**/node_modules/
+**/dist/
+**/rust_out/
+**/test-results/
+**/playwright-report/
+**/.git/

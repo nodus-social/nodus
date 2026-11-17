@@ -14,12 +14,18 @@ ARG RUST_VERSION=1-bookworm
 
 FROM rust:${RUST_VERSION} AS server
 WORKDIR /src
+# nodus-backend reaches out by path to both SDK trees (the server SDK wraps the client one),
+# so every tree it names has to be inside this stage.
+COPY sdk/ /src/sdk/
+COPY server-sdk/ /src/server-sdk/
 COPY nodus-backend/ /src/nodus-backend/
 WORKDIR /src/nodus-backend
 RUN cargo build --release --locked --bin nodus-server
 
 FROM rust:${RUST_VERSION} AS shell
 WORKDIR /src
+# The web workspace reaches into the SDK by path, so both trees have to be present.
+COPY sdk/ /src/sdk/
 COPY web/ /src/web/
 WORKDIR /src/web
 RUN cargo build --release --locked --bin nodus-web-server
@@ -35,9 +41,15 @@ RUN curl -fsSL "https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VER
       | tar -xz -C /usr/local/bin trunk
 RUN rustup target add wasm32-unknown-unknown
 WORKDIR /src
+COPY sdk/ /src/sdk/
 COPY web/ /src/web/
 WORKDIR /src/web
-RUN npm ci --no-audit --no-fund
+RUN npm ci --no-audit --no-fund --include=optional
+# npm 9 drops the platform binary of @tailwindcss/oxide that the lockfile names as an
+# optional dependency, so the native module is installed explicitly at the version npm
+# resolved. Without it `node:path`-based tailwind 4 plugins fail to load.
+RUN node -e "const {version} = require('./node_modules/@tailwindcss/oxide/package.json');\
+require('child_process').execSync('npm install --no-save --no-audit --no-fund @tailwindcss/oxide-linux-x64-gnu@' + version, {stdio: 'inherit'});" 
 RUN node js/build.mjs && node js/css.mjs && trunk build --release
 
 FROM debian:bookworm-slim AS runtime
@@ -71,6 +83,6 @@ RUN useradd --system --create-home --home-dir /var/lib/nodus nodus \
 
 EXPOSE 8080
 VOLUME ["/var/lib/nodus", "/var/lib/postgresql/data"]
-HEALTHCHECK --interval=30s --timeout=3s --start-period=40s \
+HEALTHCHECK --interval=30s --timeout=3s --start-period=90s \
   CMD curl -fsS http://127.0.0.1:8080/healthz || exit 1
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint"]
