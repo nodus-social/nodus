@@ -3,6 +3,9 @@
 set -euo pipefail
 
 export NODUS_DOMAIN="${NODUS_DOMAIN:-localhost}"
+# One socket in the state directory: the API asks its own process there, which is also the
+# only node a single-container instance has to show.
+export NODUS_TELEMETRY_SOCKET="${NODUS_TELEMETRY_SOCKET:-/var/lib/nodus/run/api.sock}"
 export NODUS_BASE_URL="${NODUS_BASE_URL:-http://localhost:8080}"
 DB_PASSWORD_FILE="/var/lib/nodus/db-password"
 
