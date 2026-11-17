@@ -72,18 +72,30 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-log "starting the backend"
-su nodus -s /bin/bash -c "RUST_LOG=${RUST_LOG:-info} /usr/local/bin/nodus-backend --roles=api,feed,scan,prune" &
+ROLES="${NODUS_ROLES:-api,feed,scan,prune}"
+
+log "starting the backend as ${ROLES}"
+su nodus -s /bin/bash -c "RUST_LOG=${RUST_LOG:-info} /usr/local/bin/nodus-backend --roles=${ROLES}" &
 pids+=("$!")
 
-log "starting the shell"
-su nodus -s /bin/bash -c "/usr/local/bin/nodus-web-server" &
-pids+=("$!")
+# A container that names roles without `api` is a worker: it has no pages to serve and
+# nothing to publish, so the shell and the ingress stay out of its process table.
+case ",${ROLES}," in
+*,api,*)
+	log "starting the shell"
+	su nodus -s /bin/bash -c "/usr/local/bin/nodus-web-server" &
+	pids+=("$!")
 
-log "starting nginx on 8080"
-# The config already says `daemon off`, so -g would make it a duplicate directive.
-nginx &
-pids+=("$!")
+	log "starting nginx on 8080"
+	# The config already says `daemon off`, so -g would make it a duplicate directive.
+	nginx &
+	pids+=("$!")
+	log "started"
+	;;
+*)
+	log "no ingress in this container: roles=${ROLES}"
+	;;
+esac
 
 # tini forwards the stop signal; the first child to exit ends the container so a crash is
 # visible in the exit code instead of a half-running instance.

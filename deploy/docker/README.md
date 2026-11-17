@@ -23,6 +23,20 @@ docker run -d -p 8080:8080 \
 the SSR shell, and nginx. `tini` reaps and forwards the stop signal; the first child to exit
 ends the container, so a crashed backend is not hidden behind a live nginx.
 
+## One container, several roles
+
+The container runs the API, the scanner worker, the pruner and the recommendation engine in
+one process, the shell beside it and nginx in front of both. `NODUS_ROLES` trims that list:
+
+```console
+docker run -e NODUS_ROLES=scan nodus:aio
+```
+
+A list without `api` starts no shell and no ingress, because a container that serves nothing
+has nothing to publish; it still starts Postgres, which is what makes the image an
+all-in-one box rather than a worker image. For a worker on a machine of its own, run the
+binary against the shared database instead — see `deploy/distributed/README.md`.
+
 ## Environment
 
 | Variable | Default | Meaning |
