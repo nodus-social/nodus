@@ -3,9 +3,12 @@
 set -euo pipefail
 
 export NODUS_DOMAIN="${NODUS_DOMAIN:-localhost}"
-# One socket in the state directory: the API asks its own process there, which is also the
-# only node a single-container instance has to show.
-export NODUS_TELEMETRY_SOCKET="${NODUS_TELEMETRY_SOCKET:-/var/lib/nodus/run/api.sock}"
+# Nothing inside the container listens on a port: the ingress and the two processes meet on
+# sockets in one shared directory, which is also where the API asks itself for telemetry.
+APP_RUN="/var/run/app"
+export NODUS_BIND="${NODUS_BIND:-unix:${APP_RUN}/api.sock}"
+export NODUS_LISTEN="${NODUS_LISTEN:-unix:${APP_RUN}/shell.sock}"
+export NODUS_TELEMETRY_SOCKET="${NODUS_TELEMETRY_SOCKET:-unix:${APP_RUN}/telemetry.sock}"
 export NODUS_BASE_URL="${NODUS_BASE_URL:-http://localhost:8080}"
 DB_PASSWORD_FILE="/var/lib/nodus/db-password"
 
@@ -37,6 +40,12 @@ if [[ ! -s "${PGDATA}/PG_VERSION" ]]; then
     su postgres -c "initdb -D ${PGDATA} --auth-local=trust --auth-host=scram-sha-256" >/dev/null
 fi
 
+# The ingress writes temporary bodies, and the services create their sockets here; a killed
+# process leaves its socket behind, so the directory starts empty.
+install -d -m 0775 -o nodus -g nodus "${APP_RUN}"
+install -d -m 0755 -o nodus -g nodus /var/lib/nodus/nginx/{body,proxy,fastcgi,uwsgi,scgi}
+rm -f "${APP_RUN}"/*.sock
+
 log "starting postgres"
 su postgres -c "pg_ctl -D ${PGDATA} -l /var/lib/postgresql/postgres.log -o '-c listen_addresses=127.0.0.1' start" >/dev/null
 until su postgres -c "pg_isready -h 127.0.0.1" >/dev/null 2>&1; do sleep 0.2; done
@@ -64,7 +73,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 log "starting the backend"
-su nodus -s /bin/bash -c "RUST_LOG=${RUST_LOG:-info} /usr/local/bin/nodus-backend --roles=api,scan,prune" &
+su nodus -s /bin/bash -c "RUST_LOG=${RUST_LOG:-info} /usr/local/bin/nodus-backend --roles=api,feed,scan,prune" &
 pids+=("$!")
 
 log "starting the shell"

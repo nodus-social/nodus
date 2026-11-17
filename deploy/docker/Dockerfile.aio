@@ -14,19 +14,17 @@ ARG RUST_VERSION=1-bookworm
 
 FROM rust:${RUST_VERSION} AS server
 WORKDIR /src
-# nodus-backend reaches out by path to both SDK trees (the server SDK wraps the client one),
-# so every tree it names has to be inside this stage.
-COPY sdk/ /src/sdk/
-COPY server-sdk/ /src/server-sdk/
-COPY nodus-backend/ /src/nodus-backend/
+# Every tree in the repository is in one Cargo dependency graph: the server reaches the SDKs
+# by path and mounts the recommendation engine in process, the shell reaches the SDK and the
+# service transport. Copying the context once keeps every stage resolvable whatever a
+# manifest names next; `.dockerignore` decides what that context contains.
+COPY . /src
 WORKDIR /src/nodus-backend
 RUN cargo build --release --locked --bin nodus-server
 
 FROM rust:${RUST_VERSION} AS shell
 WORKDIR /src
-# The web workspace reaches into the SDK by path, so both trees have to be present.
-COPY sdk/ /src/sdk/
-COPY web/ /src/web/
+COPY . /src
 WORKDIR /src/web
 RUN cargo build --release --locked --bin nodus-web-server
 
@@ -34,15 +32,16 @@ FROM rust:${RUST_VERSION} AS bundle
 # bookworm's nodejs is new enough for esbuild and tailwind; trunk is a pinned prebuilt
 # release so the stage does not spend ten minutes compiling it.
 ARG TRUNK_VERSION=0.22.1
+# `binaryen` puts `wasm-opt` on PATH, which is where trunk looks before it downloads its
+# own copy: a build must not fail because that download timed out.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends nodejs npm curl ca-certificates xz-utils \
+ && apt-get install -y --no-install-recommends nodejs npm curl ca-certificates xz-utils binaryen \
  && rm -rf /var/lib/apt/lists/*
 RUN curl -fsSL "https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" \
       | tar -xz -C /usr/local/bin trunk
 RUN rustup target add wasm32-unknown-unknown
 WORKDIR /src
-COPY sdk/ /src/sdk/
-COPY web/ /src/web/
+COPY . /src
 WORKDIR /src/web
 RUN npm ci --no-audit --no-fund --include=optional
 # npm 9 drops the platform binary of @tailwindcss/oxide that the lockfile names as an
@@ -55,10 +54,11 @@ RUN node js/build.mjs && node js/css.mjs && trunk build --release
 FROM debian:bookworm-slim AS runtime
 ENV DEBIAN_FRONTEND=noninteractive \
     PGDATA=/var/lib/postgresql/data \
-    NODUS_LISTEN=127.0.0.1:3002 \
+    NODUS_LISTEN=unix:/var/run/app/shell.sock \
     NODUS_ASSET_DIR=/srv/nodus \
     NODUS_SESSIONS=/var/lib/nodus/sessions.json \
-    NODUS_BIND=127.0.0.1:3001 \
+    NODUS_BIND=unix:/var/run/app/api.sock \
+    NODUS_TELEMETRY_SOCKET=unix:/var/run/app/telemetry.sock \
     NODUS_DATABASE_URL=postgres://nodus@127.0.0.1/nodus \
     NODUS_MEDIA_DIR=/var/lib/nodus/media \
     NODUS_MEDIA_VARIANTS_DIR=/var/lib/nodus/media/variants
