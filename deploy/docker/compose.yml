@@ -2,14 +2,14 @@
 #
 #   docker compose -f deploy/docker/compose.yml up --build
 #
-# The image holds the server, the server-rendered shell, the client bundle, nginx and
+# The image holds the server, the server-rendered shell, the client bundle, Caddy and
 # Postgres. State lives in the two named volumes, so `up --build` keeps the instance.
 services:
   nodus:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.aio
-    image: nodus:aio
+    image: nodus-aio:${NODUS_VERSION:-0.1.0}
     container_name: nodus-aio
     restart: unless-stopped
     ports:

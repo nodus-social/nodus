@@ -1,14 +1,17 @@
 # syntax=docker/dockerfile:1
 
 # One image that runs a complete Nodus instance: Postgres, the server, the
-# server-rendered shell and the client bundle, behind one nginx listener.
+# server-rendered shell and the client bundle, behind one Caddy listener.
 #
-#   docker build -f deploy/docker/Dockerfile.aio -t nodus:aio .
+#   docker build -f deploy/docker/Dockerfile.aio -t nodus-aio:0.1.0 .
 #   docker run -p 8080:8080 -e NODUS_DOMAIN=nodus.example -e NODUS_BASE_URL=https://nodus.example \
-#     -v nodus-data:/var/lib/nodus nodus:aio
+#     -v nodus-data:/var/lib/nodus nodus-aio:0.1.0
 #
 # The binary stages build on bookworm because the runtime is bookworm; the bundle stage needs
 # node and trunk, and its output is wasm, which has no libc to mismatch.
+#
+# Each service is its own binary. The image starts all of them in one container, but nothing
+# in the build assumes that: a spread-out deployment takes one binary per unit.
 
 ARG RUST_VERSION=1-bookworm
 
@@ -20,7 +23,8 @@ WORKDIR /src
 # manifest names next; `.dockerignore` decides what that context contains.
 COPY . /src
 WORKDIR /src/nodus-backend
-RUN cargo build --release --locked --bin nodus-server
+RUN cargo build --release --locked \
+      --bin nodus-api --bin nodus-feed --bin nodus-scan --bin nodus-prune --bin nodus-calc
 
 FROM rust:${RUST_VERSION} AS shell
 WORKDIR /src
@@ -57,26 +61,28 @@ ENV DEBIAN_FRONTEND=noninteractive \
     NODUS_LISTEN=unix:/var/run/app/shell.sock \
     NODUS_ASSET_DIR=/srv/nodus \
     NODUS_SESSIONS=/var/lib/nodus/sessions.json \
-    NODUS_BIND=unix:/var/run/app/api.sock \
-    NODUS_TELEMETRY_SOCKET=unix:/var/run/app/telemetry.sock \
+    NODUS_TELEMETRY=feed=unix:/var/run/app/feed-telemetry.sock,scan=unix:/var/run/app/scan.sock,prune=unix:/var/run/app/prune.sock,calc=unix:/var/run/app/calc.sock \
     NODUS_DATABASE_URL=postgres://nodus@127.0.0.1/nodus \
     NODUS_MEDIA_DIR=/var/lib/nodus/media \
     NODUS_MEDIA_VARIANTS_DIR=/var/lib/nodus/media/variants
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      postgresql-15 nginx-light curl ca-certificates tini \
- && rm -rf /var/lib/apt/lists/* \
- && rm -f /etc/nginx/sites-enabled/default
+      postgresql-15 caddy curl ca-certificates tini \
+ && rm -rf /var/lib/apt/lists/*
 
-COPY --from=server /src/nodus-backend/target/release/nodus-server /usr/local/bin/nodus-backend
+COPY --from=server /src/nodus-backend/target/release/nodus-api /usr/local/bin/nodus-api
+COPY --from=server /src/nodus-backend/target/release/nodus-feed /usr/local/bin/nodus-feed
+COPY --from=server /src/nodus-backend/target/release/nodus-scan /usr/local/bin/nodus-scan
+COPY --from=server /src/nodus-backend/target/release/nodus-prune /usr/local/bin/nodus-prune
+COPY --from=server /src/nodus-backend/target/release/nodus-calc /usr/local/bin/nodus-calc
 COPY --from=shell /src/web/target/release/nodus-web-server /usr/local/bin/nodus-web-server
 COPY --from=bundle /src/web/dist/ /srv/nodus/
-COPY deploy/docker/nginx.conf /etc/nginx/nginx.conf
+COPY deploy/docker/Caddyfile /etc/caddy/Caddyfile
 COPY deploy/docker/entrypoint.sh /usr/local/bin/entrypoint
 
 RUN useradd --system --create-home --home-dir /var/lib/nodus nodus \
- && mkdir -p /var/lib/nodus/media/variants /run/postgresql \
+ && mkdir -p /var/lib/nodus/media/variants /var/lib/nodus/caddy /run/postgresql \
  && chown -R nodus:nodus /var/lib/nodus /srv/nodus \
  && chown postgres:postgres /var/lib/postgresql /run/postgresql \
  && chmod 0755 /usr/local/bin/entrypoint

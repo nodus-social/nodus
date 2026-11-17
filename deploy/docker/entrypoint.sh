@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
-# Start a complete single-container instance: Postgres, the server, the shell and nginx.
+# Start a complete single-container instance: Postgres, the server, the shell and Caddy.
 set -euo pipefail
 
 export NODUS_DOMAIN="${NODUS_DOMAIN:-localhost}"
 # Nothing inside the container listens on a port: the ingress and the two processes meet on
 # sockets in one shared directory, which is also where the API asks itself for telemetry.
 APP_RUN="/var/run/app"
-export NODUS_BIND="${NODUS_BIND:-unix:${APP_RUN}/api.sock}"
 export NODUS_LISTEN="${NODUS_LISTEN:-unix:${APP_RUN}/shell.sock}"
-export NODUS_TELEMETRY_SOCKET="${NODUS_TELEMETRY_SOCKET:-unix:${APP_RUN}/telemetry.sock}"
+# Every service answers about itself on its own socket, and the API is the one that asks:
+# the list is how it knows what should be there, so a missing worker shows up as dead
+# instead of absent.
+export NODUS_TELEMETRY="${NODUS_TELEMETRY:-feed=unix:${APP_RUN}/feed-telemetry.sock,scan=unix:${APP_RUN}/scan.sock,prune=unix:${APP_RUN}/prune.sock,calc=unix:${APP_RUN}/calc.sock}"
 export NODUS_BASE_URL="${NODUS_BASE_URL:-http://localhost:8080}"
 DB_PASSWORD_FILE="/var/lib/nodus/db-password"
 
@@ -43,7 +45,7 @@ fi
 # The ingress writes temporary bodies, and the services create their sockets here; a killed
 # process leaves its socket behind, so the directory starts empty.
 install -d -m 0775 -o nodus -g nodus "${APP_RUN}"
-install -d -m 0755 -o nodus -g nodus /var/lib/nodus/nginx/{body,proxy,fastcgi,uwsgi,scgi}
+install -d -m 0755 /var/lib/nodus/caddy
 rm -f "${APP_RUN}"/*.sock
 
 log "starting postgres"
@@ -72,30 +74,81 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-ROLES="${NODUS_ROLES:-api,feed,scan,prune}"
+ROLES="${NODUS_ROLES:-api,feed,scan,prune,calc}"
+TOKEN_KEY_FILE="/var/lib/nodus/token-enc-key"
 
-log "starting the backend as ${ROLES}"
-su nodus -s /bin/bash -c "RUST_LOG=${RUST_LOG:-info} /usr/local/bin/nodus-backend --roles=${ROLES}" &
-pids+=("$!")
+# The calculator seals and opens sync tokens. A key generated here is a key that survives a
+# restart because it is kept beside the volume, and a deployment that already has one in its
+# environment is never overridden.
+if [[ ",${ROLES}," == *,calc,* && -z "${TOKEN_ENC_KEY:-}" ]]; then
+	if [[ -f "${TOKEN_KEY_FILE}" ]]; then
+		export TOKEN_ENC_KEY="$(cat "${TOKEN_KEY_FILE}")"
+	else
+		export TOKEN_ENC_KEY="$(head -c 32 /dev/urandom | base64 | tr -d '\n')"
+		install -m 0600 -o nodus -g nodus /dev/null "${TOKEN_KEY_FILE}"
+		printf '%s' "${TOKEN_ENC_KEY}" >"${TOKEN_KEY_FILE}"
+		log "generated a token sealing key in ${TOKEN_KEY_FILE}"
+	fi
+fi
+
+pids=()
+cleanup() {
+	log "stopping"
+	for pid in "${pids[@]}"; do kill -TERM "${pid}" 2>/dev/null || true; done
+	wait || true
+	su postgres -c "pg_ctl -D ${PGDATA} stop -m fast" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT INT TERM
+
+# Each service is its own process and its own unit in a spread-out deployment; here they
+# share one container, one database and one socket directory, and talk over gRPC.
+spawn() {
+	local name="$1"
+	local binary="$2"
+	local spec="$3"
+	log "starting ${name}"
+	# shellcheck disable=SC2086
+	su nodus -s /bin/bash -c "RUST_LOG=${RUST_LOG:-info} ${spec} exec /usr/local/bin/${binary}" &
+	pids+=("$!")
+}
+
+if [[ ",${ROLES}," == *,api,* ]]; then
+	spawn api nodus-api "NODUS_NODE_NAME=api NODUS_BIND=unix:${APP_RUN}/api.sock NODUS_TELEMETRY_SOCKET=unix:${APP_RUN}/api-telemetry.sock NODUS_DATABASE_URL='${NODUS_DATABASE_URL}'"
+fi
+if [[ ",${ROLES}," == *,feed,* ]]; then
+	spawn feed nodus-feed "NODUS_NODE_NAME=feed NODUS_BIND=unix:${APP_RUN}/feed.sock NODUS_TELEMETRY_SOCKET=unix:${APP_RUN}/feed-telemetry.sock NODUS_DATABASE_URL='${NODUS_DATABASE_URL}'"
+fi
+if [[ ",${ROLES}," == *,scan,* ]]; then
+	spawn scan nodus-scan "NODUS_NODE_NAME=scan NODUS_TELEMETRY_SOCKET=unix:${APP_RUN}/scan.sock NODUS_DATABASE_URL='${NODUS_DATABASE_URL}'"
+fi
+if [[ ",${ROLES}," == *,prune,* ]]; then
+	spawn prune nodus-prune "NODUS_NODE_NAME=prune NODUS_TELEMETRY_SOCKET=unix:${APP_RUN}/prune.sock NODUS_DATABASE_URL='${NODUS_DATABASE_URL}' NODUS_MEDIA_DIR=/var/lib/nodus/media NODUS_MEDIA_VARIANTS_DIR=/var/lib/nodus/media/variants"
+fi
+if [[ ",${ROLES}," == *,calc,* ]]; then
+	spawn calc nodus-calc "NODUS_NODE_NAME=calc NODUS_TELEMETRY_SOCKET=unix:${APP_RUN}/calc.sock NODUS_DATABASE_URL='${NODUS_DATABASE_URL}' TOKEN_ENC_KEY='${TOKEN_ENC_KEY}'"
+fi
 
 # A container that names roles without `api` is a worker: it has no pages to serve and
 # nothing to publish, so the shell and the ingress stay out of its process table.
-case ",${ROLES}," in
-*,api,*)
+if [[ ",${ROLES}," == *,api,* ]]; then
 	log "starting the shell"
-	su nodus -s /bin/bash -c "/usr/local/bin/nodus-web-server" &
+	su nodus -s /bin/bash -c "exec /usr/local/bin/nodus-web-server" &
 	pids+=("$!")
 
-	log "starting nginx on 8080"
-	# The config already says `daemon off`, so -g would make it a duplicate directive.
-	nginx &
+	# A typo in the routing should be a log line and a stopped container, not a listener that
+	# answers the wrong process.
+	if ! caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null; then
+		log "the ingress configuration is not valid"
+		caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile || true
+		exit 1
+	fi
+	log "starting caddy on 8080"
+	caddy run --config /etc/caddy/Caddyfile --adapter caddyfile &
 	pids+=("$!")
-	log "started"
-	;;
-*)
+	log "started as ${ROLES}"
+else
 	log "no ingress in this container: roles=${ROLES}"
-	;;
-esac
+fi
 
 # tini forwards the stop signal; the first child to exit ends the container so a crash is
 # visible in the exit code instead of a half-running instance.
