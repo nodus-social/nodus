@@ -24,7 +24,8 @@ WORKDIR /src
 COPY . /src
 WORKDIR /src/nodus-backend
 RUN cargo build --release --locked \
-      --bin nodus-api --bin nodus-feed --bin nodus-scan --bin nodus-prune --bin nodus-calc
+      --bin nodus-api --bin nodus-media --bin nodus-feed --bin nodus-scan --bin nodus-prune \
+      --bin nodus-calc
 
 FROM rust:${RUST_VERSION} AS shell
 WORKDIR /src
@@ -72,6 +73,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=server /src/nodus-backend/target/release/nodus-api /usr/local/bin/nodus-api
+COPY --from=server /src/nodus-backend/target/release/nodus-media /usr/local/bin/nodus-media
 COPY --from=server /src/nodus-backend/target/release/nodus-feed /usr/local/bin/nodus-feed
 COPY --from=server /src/nodus-backend/target/release/nodus-scan /usr/local/bin/nodus-scan
 COPY --from=server /src/nodus-backend/target/release/nodus-prune /usr/local/bin/nodus-prune

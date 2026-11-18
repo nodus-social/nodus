@@ -6,7 +6,8 @@ machine, and they meet at the database and at the addresses they are told about 
 registry, a broker or a discovery service.
 
 ```text
-nodus-api     serves HTTP and ActivityPub, and owns media and auth pages
+nodus-api     serves HTTP and ActivityPub, and owns uploads and auth pages
+nodus-media   serves uploaded bytes and their variants
 nodus-feed    serves recommendations, browsing, sync and unfurling
 nodus-scan    claims scans, calls the scanner services, raises what they find
 nodus-prune   deletes expired media, sessions and codes
@@ -15,8 +16,8 @@ nodus-calc    the recommendation engine's heavy half: crawling, recomputing, ret
 
 Shared code lives in `nodus-backend/crates/*`; the binaries live in `nodus-backend/services/*`.
 A worker binds no port at all: it answers telemetry and on-demand triggers over a gRPC socket
-of its own, and says so in its log. The only service that speaks HTTP is `nodus-api`
-(and `nodus-feed`); everything else talks gRPC.
+of its own, and says so in its log. The only services that speak HTTP are `nodus-api`,
+`nodus-media` and `nodus-feed`; everything else talks gRPC.
 
 Inside one container the services reach each other over Unix sockets, which is both faster and
 the reason the AIO image publishes exactly one port.
@@ -71,6 +72,7 @@ On one host the sockets are enough and nothing is published:
 
 ```console
 nodus-api    &   # /var/run/app/api.sock, telemetry beside it
+nodus-media  &   # /var/run/app/media.sock
 nodus-feed   &   # /var/run/app/feed.sock
 nodus-scan   &   # /var/run/app/scan.sock
 nodus-prune  &   # /var/run/app/prune.sock

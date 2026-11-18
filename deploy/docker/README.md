@@ -6,7 +6,7 @@ the smallest thing that behaves like an instance — the same routing the refere
 puts in front of the boxes, folded into one process tree that talks to itself over Unix
 sockets instead of the network.
 
-```
+```sh
 docker build -f deploy/docker/Dockerfile.aio -t nodus-aio:0.1.0 .
 docker run -d -p 8080:8080 \
   -e NODUS_DOMAIN=nodus.example \
@@ -24,7 +24,8 @@ docker run -d -p 8080:8080 \
 
 | Process | Socket | Does |
 | --- | --- | --- |
-| `nodus-api` | `/var/run/app/api.sock` | API, ActivityPub documents, auth pages, media |
+| `nodus-api` | `/var/run/app/api.sock` | API, ActivityPub documents, auth pages, uploads |
+| `nodus-media` | `/var/run/app/media.sock` | uploaded bytes and their variants |
 | `nodus-feed` | `/var/run/app/feed.sock` | recommendations, browsing, sync, unfurling |
 | `nodus-scan` | — | turns scanner answers into moderation decisions |
 | `nodus-prune` | — | deletes what has expired |
@@ -47,7 +48,7 @@ docker run -e NODUS_ROLES=scan nodus-aio:0.1.0
 
 A list without `api` starts no shell and no ingress, because a container that serves nothing
 has nothing to publish; it still starts Postgres, which is what makes the image an
-all-in-one box rather than a worker image. The default is `api,feed,scan,prune,calc`. For a worker on a machine of its own, run the
+all-in-one box rather than a worker image. The default is `api,media,feed,scan,prune,calc`. For a worker on a machine of its own, run the
 binary against the shared database instead — see `deploy/distributed/README.md`.
 
 ## Environment
@@ -60,7 +61,7 @@ binary against the shared database instead — see `deploy/distributed/README.md
 | `NODUS_AUTH_SECURE_COOKIES` | unset | Set to `true` behind TLS |
 | `NODUS_BOOTSTRAP_EMAIL`, `NODUS_BOOTSTRAP_USERNAME`, `NODUS_BOOTSTRAP_PASSWORD` | unset | First administrator, created once |
 | `NODUS_DB_PASSWORD` | generated | Overrides the generated database password |
-| `NODUS_ROLES` | `api,feed,scan,prune,calc` | Which services this container runs |
+| `NODUS_ROLES` | `api,media,feed,scan,prune,calc` | Which services this container runs |
 | `NODUS_TELEMETRY` | the four worker sockets | Where the API looks for its siblings |
 | `NODUS_TELEMETRY_FULL` | unset | Set to `true` to show socket paths instead of `unix socket` |
 | `NODUS_TOKEN_ENC_KEY` | generated into `/var/lib/nodus/token-enc-key` | Plus token sealing key |

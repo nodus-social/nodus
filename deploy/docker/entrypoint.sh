@@ -74,7 +74,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-ROLES="${NODUS_ROLES:-api,feed,scan,prune,calc}"
+ROLES="${NODUS_ROLES:-api,media,feed,scan,prune,calc}"
 TOKEN_KEY_FILE="/var/lib/nodus/token-enc-key"
 
 # The calculator seals and opens sync tokens. A key generated here is a key that survives a
@@ -114,6 +114,11 @@ spawn() {
 
 if [[ ",${ROLES}," == *,api,* ]]; then
 	spawn api nodus-api "NODUS_NODE_NAME=api NODUS_BIND=unix:${APP_RUN}/api.sock NODUS_TELEMETRY_SOCKET=unix:${APP_RUN}/api-telemetry.sock NODUS_DATABASE_URL='${NODUS_DATABASE_URL}'"
+fi
+# The ingress routes `/media/*` to this socket, so a container that answers pages needs it
+# even when the role list does not name it.
+if [[ ",${ROLES}," == *,media,* || ",${ROLES}," == *,api,* ]]; then
+	spawn media nodus-media "NODUS_NODE_NAME=media NODUS_BIND=unix:${APP_RUN}/media.sock NODUS_TELEMETRY_SOCKET=unix:${APP_RUN}/media-telemetry.sock NODUS_DATABASE_URL='${NODUS_DATABASE_URL}' NODUS_MEDIA_DIR=/var/lib/nodus/media NODUS_MEDIA_VARIANTS_DIR=/var/lib/nodus/media/variants"
 fi
 if [[ ",${ROLES}," == *,feed,* ]]; then
 	spawn feed nodus-feed "NODUS_NODE_NAME=feed NODUS_BIND=unix:${APP_RUN}/feed.sock NODUS_TELEMETRY_SOCKET=unix:${APP_RUN}/feed-telemetry.sock NODUS_DATABASE_URL='${NODUS_DATABASE_URL}'"
