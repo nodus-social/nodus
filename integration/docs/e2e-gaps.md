@@ -87,7 +87,49 @@ for after Local and green with the arm.
 
 ## Unfollow returns non-2xx
 
-`POST /api/v1/accounts/:id/unfollow` answers non-success for Ada and the
+`POST /api/v1/accounts/:id/unfollow` answers `404 {"error":"no route for
+POST /api/v1/accounts/01m7yzkjfwhazsjs93hhxpdsax/unfollow"}` for Ada and the
 admin, so the follow edge cannot be removed through the API and the
-unfollow-visibility row has no state to arrange. Owner: `server` accounts
-API.
+unfollow-visibility row has no state to arrange. Owner: `server` accounts API;
+not patched here because `nodus-backend` is owned elsewhere at this build.
+
+Measured against the lab with Ada's token (the edge exists: `GET
+/api/v1/accounts/relationships?id[]=<admin>` answers `"following": true`):
+
+```
+$ curl -i -X POST -H "Authorization: Bearer <ada token>" \
+    http://127.0.0.1:18080/api/v1/accounts/01m7yzkjfwhazsjs93hhxpdsax/unfollow
+HTTP/1.1 404 Not Found
+{"error":"no route for POST /api/v1/accounts/01m7yzkjfwhazsjs93hhxpdsax/unfollow"}
+```
+
+That body is axum's own fallback (`nodus-backend/crates/api/src/error.rs:114-121`,
+`not_found_fallback`), so the request reached the API router and the router has
+no such route: Caddy forwards `/api/*` straight to `nodus-api`
+(`integration/Caddyfile`, `@api` handle) and the shell never rewrites it, so
+this is not a `web` proxy defect.
+
+The handler exists; only the method and the path differ. `nodus-backend`
+`crates/api/src/lib.rs:99-102` mounts it as
+
+```rust
+.route(
+    "/api/v1/accounts/{id}/follow",
+    post(accounts::follow).delete(accounts::unfollow),
+)
+```
+
+while the pinned client posts to `/api/v1/accounts/{id}/unfollow`
+(`sdk/crates/mastodon/src/rest/api/mod.rs:118-120`, `unfollow`), which is the
+Mastodon spelling of the same call. The handler itself is fine
+(`nodus-backend/crates/api/src/accounts.rs:379-391`).
+
+One-line fix (in `nodus-backend`, with `post` already imported there):
+
+```rust
+.route("/api/v1/accounts/{id}/unfollow", post(accounts::unfollow))
+```
+
+`tests/timelines.spec.mjs` keeps its row in `test.fixme` with that cause in the
+comment: the row ends by re-following through `POST .../follow`, which works,
+so the only thing that stops it is the missing route.
