@@ -8,11 +8,17 @@
 # the end (the one direct database write; see `backfill_home`).
 set -euo pipefail
 
-SCRIPT_DIR=$(unset CDPATH; cd -- "$(dirname -- "$0")" && pwd)
+SCRIPT_DIR=$(
+    unset CDPATH
+    cd -- "$(dirname -- "$0")" && pwd
+)
 . "$SCRIPT_DIR/common.sh"
 
 for tool in curl jq openssl; do
-	command -v "$tool" >/dev/null || { printf 'seed.sh needs %s\n' "$tool" >&2; exit 1; }
+    command -v "$tool" >/dev/null || {
+        printf 'seed.sh needs %s\n' "$tool" >&2
+        exit 1
+    }
 done
 
 ensure_env
@@ -38,12 +44,12 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
 csrf_from() {
-	sed -n 's/.*name="csrf_token" value="\([^"]*\)".*/\1/p' "$1" | head -n 1
+    sed -n 's/.*name="csrf_token" value="\([^"]*\)".*/\1/p' "$1" | head -n 1
 }
 
 die() {
-	printf 'seed failed: %s\n' "$*" >&2
-	exit 1
+    printf 'seed failed: %s\n' "$*" >&2
+    exit 1
 }
 
 wait_for_url "$BASE/healthz" 120 || die "the stack is not answering on $BASE"
@@ -51,11 +57,11 @@ wait_for_url "$BASE/healthz" 120 || die "the stack is not answering on $BASE"
 # ---- OAuth client ---------------------------------------------------------
 
 app=$(curl -fsS -X POST "$BASE/api/v1/apps" \
-	-H 'content-type: application/json' \
-	-d "$(jq -nc --arg name "$CLIENT_NAME" --arg redirect "$REDIRECT_URI" \
-		--arg scopes "$SCOPES" \
-		'{client_name: $name, redirect_uris: $redirect, scopes: $scopes}')") ||
-	die "client registration failed"
+    -H 'content-type: application/json' \
+    -d "$(jq -nc --arg name "$CLIENT_NAME" --arg redirect "$REDIRECT_URI" \
+        --arg scopes "$SCOPES" \
+        '{client_name: $name, redirect_uris: $redirect, scopes: $scopes}')") ||
+    die "client registration failed"
 client_id=$(printf '%s' "$app" | jq -r .client_id)
 client_secret=$(printf '%s' "$app" | jq -r .client_secret)
 [ -n "$client_id" ] && [ "$client_id" != null ] || die "no client_id in $app"
@@ -63,111 +69,111 @@ client_secret=$(printf '%s' "$app" | jq -r .client_secret)
 # ---- account helpers ------------------------------------------------------
 
 register_account() {
-	local user=$1 email=$2 password=$3
-	local jar="$WORK/$user-register.jar" page="$WORK/$user-register.html"
-	curl -fsS -c "$jar" "$BASE/auth/register" -o "$page"
-	local csrf
-	csrf=$(csrf_from "$page")
-	[ -n "$csrf" ] || die "no csrf token on the register page"
-	local code
-	code=$(curl -sS -o "$WORK/$user-register.out" -w '%{http_code}' \
-		-b "$jar" -c "$jar" \
-		--data-urlencode "username=$user" \
-		--data-urlencode "email=$email" \
-		--data-urlencode "password=$password" \
-		--data-urlencode "password_confirmation=$password" \
-		--data-urlencode "return_to=/" \
-		--data-urlencode "csrf_token=$csrf" \
-		"$BASE/auth/register")
-	case "$code" in
-	2* | 3*) ;;
-	*) die "registering $user returned HTTP $code" ;;
-	esac
+    local user=$1 email=$2 password=$3
+    local jar="$WORK/$user-register.jar" page="$WORK/$user-register.html"
+    curl -fsS -c "$jar" "$BASE/auth/register" -o "$page"
+    local csrf
+    csrf=$(csrf_from "$page")
+    [ -n "$csrf" ] || die "no csrf token on the register page"
+    local code
+    code=$(curl -sS -o "$WORK/$user-register.out" -w '%{http_code}' \
+        -b "$jar" -c "$jar" \
+        --data-urlencode "username=$user" \
+        --data-urlencode "email=$email" \
+        --data-urlencode "password=$password" \
+        --data-urlencode "password_confirmation=$password" \
+        --data-urlencode "return_to=/" \
+        --data-urlencode "csrf_token=$csrf" \
+        "$BASE/auth/register")
+    case "$code" in
+    2* | 3*) ;;
+    *) die "registering $user returned HTTP $code" ;;
+    esac
 }
 
 # Returns a bearer token for an existing account. The token is the only thing on
 # stdout; diagnostics go to stderr.
 login_token() {
-	local email=$1 password=$2 name=$3
-	local jar="$WORK/$name.jar" page="$WORK/$name-login.html"
-	curl -fsS -c "$jar" "$BASE/auth/login" -o "$page"
-	local csrf
-	csrf=$(csrf_from "$page")
-	[ -n "$csrf" ] || die "no csrf token on the login page"
-	local code
-	code=$(curl -sS -o "$WORK/$name-login.out" -w '%{http_code}' \
-		-b "$jar" -c "$jar" \
-		--data-urlencode "email=$email" \
-		--data-urlencode "password=$password" \
-		--data-urlencode "return_to=/" \
-		--data-urlencode "csrf_token=$csrf" \
-		"$BASE/auth/login")
-	[ "$code" = "303" ] || die "login for $email returned HTTP $code"
+    local email=$1 password=$2 name=$3
+    local jar="$WORK/$name.jar" page="$WORK/$name-login.html"
+    curl -fsS -c "$jar" "$BASE/auth/login" -o "$page"
+    local csrf
+    csrf=$(csrf_from "$page")
+    [ -n "$csrf" ] || die "no csrf token on the login page"
+    local code
+    code=$(curl -sS -o "$WORK/$name-login.out" -w '%{http_code}' \
+        -b "$jar" -c "$jar" \
+        --data-urlencode "email=$email" \
+        --data-urlencode "password=$password" \
+        --data-urlencode "return_to=/" \
+        --data-urlencode "csrf_token=$csrf" \
+        "$BASE/auth/login")
+    [ "$code" = "303" ] || die "login for $email returned HTTP $code"
 
-	local verifier challenge
-	verifier=$(openssl rand -hex 32)
-	challenge=$(printf '%s' "$verifier" | openssl dgst -sha256 -binary |
-		openssl base64 -A | tr '+/' '-_' | tr -d '=')
+    local verifier challenge
+    verifier=$(openssl rand -hex 32)
+    challenge=$(printf '%s' "$verifier" | openssl dgst -sha256 -binary |
+        openssl base64 -A | tr '+/' '-_' | tr -d '=')
 
-	local consent="$WORK/$name-consent.html" headers="$WORK/$name-consent.headers"
-	code=$(curl -sS -o "$consent" -D "$headers" -w '%{http_code}' \
-		-b "$jar" -c "$jar" -G "$BASE/oauth/authorize" \
-		--data-urlencode "response_type=code" \
-		--data-urlencode "client_id=$client_id" \
-		--data-urlencode "redirect_uri=$REDIRECT_URI" \
-		--data-urlencode "scope=$SCOPES" \
-		--data-urlencode "state=$STATE" \
-		--data-urlencode "code_challenge=$challenge" \
-		--data-urlencode "code_challenge_method=S256")
-	[ "$code" = "200" ] || die "authorize page for $name returned HTTP $code"
+    local consent="$WORK/$name-consent.html" headers="$WORK/$name-consent.headers"
+    code=$(curl -sS -o "$consent" -D "$headers" -w '%{http_code}' \
+        -b "$jar" -c "$jar" -G "$BASE/oauth/authorize" \
+        --data-urlencode "response_type=code" \
+        --data-urlencode "client_id=$client_id" \
+        --data-urlencode "redirect_uri=$REDIRECT_URI" \
+        --data-urlencode "scope=$SCOPES" \
+        --data-urlencode "state=$STATE" \
+        --data-urlencode "code_challenge=$challenge" \
+        --data-urlencode "code_challenge_method=S256")
+    [ "$code" = "200" ] || die "authorize page for $name returned HTTP $code"
 
-	csrf=$(csrf_from "$consent")
-	[ -n "$csrf" ] || die "no csrf token on the consent page"
+    csrf=$(csrf_from "$consent")
+    [ -n "$csrf" ] || die "no csrf token on the consent page"
 
-	code=$(curl -sS -o /dev/null -D "$headers" -w '%{http_code}' \
-		-b "$jar" -c "$jar" -X POST "$BASE/oauth/authorize" \
-		--data-urlencode "client_id=$client_id" \
-		--data-urlencode "redirect_uri=$REDIRECT_URI" \
-		--data-urlencode "scopes=$SCOPES" \
-		--data-urlencode "state=$STATE" \
-		--data-urlencode "code_challenge=$challenge" \
-		--data-urlencode "csrf_token=$csrf" \
-		--data-urlencode "decision=allow")
-	[ "$code" = "303" ] || die "consent for $name returned HTTP $code"
+    code=$(curl -sS -o /dev/null -D "$headers" -w '%{http_code}' \
+        -b "$jar" -c "$jar" -X POST "$BASE/oauth/authorize" \
+        --data-urlencode "client_id=$client_id" \
+        --data-urlencode "redirect_uri=$REDIRECT_URI" \
+        --data-urlencode "scopes=$SCOPES" \
+        --data-urlencode "state=$STATE" \
+        --data-urlencode "code_challenge=$challenge" \
+        --data-urlencode "csrf_token=$csrf" \
+        --data-urlencode "decision=allow")
+    [ "$code" = "303" ] || die "consent for $name returned HTTP $code"
 
-	local location auth_code
-	location=$(sed -n 's/^[Ll]ocation: //p' "$headers" | tr -d '\r' | tail -n 1)
-	auth_code=$(printf '%s' "$location" |
-		sed -n 's/.*[?&]code=\([^&]*\).*/\1/p')
-	[ -n "$auth_code" ] || die "no authorization code in $location"
+    local location auth_code
+    location=$(sed -n 's/^[Ll]ocation: //p' "$headers" | tr -d '\r' | tail -n 1)
+    auth_code=$(printf '%s' "$location" |
+        sed -n 's/.*[?&]code=\([^&]*\).*/\1/p')
+    [ -n "$auth_code" ] || die "no authorization code in $location"
 
-	local token
-	token=$(curl -fsS -X POST "$BASE/oauth/token" \
-		--data-urlencode "grant_type=authorization_code" \
-		--data-urlencode "code=$auth_code" \
-		--data-urlencode "client_id=$client_id" \
-		--data-urlencode "client_secret=$client_secret" \
-		--data-urlencode "redirect_uri=$REDIRECT_URI" \
-		--data-urlencode "code_verifier=$verifier" |
-		jq -r .access_token)
-	[ -n "$token" ] && [ "$token" != null ] || die "token exchange failed"
-	printf '%s\n' "$token"
+    local token
+    token=$(curl -fsS -X POST "$BASE/oauth/token" \
+        --data-urlencode "grant_type=authorization_code" \
+        --data-urlencode "code=$auth_code" \
+        --data-urlencode "client_id=$client_id" \
+        --data-urlencode "client_secret=$client_secret" \
+        --data-urlencode "redirect_uri=$REDIRECT_URI" \
+        --data-urlencode "code_verifier=$verifier" |
+        jq -r .access_token)
+    [ -n "$token" ] && [ "$token" != null ] || die "token exchange failed"
+    printf '%s\n' "$token"
 }
 
 api_get() {
-	curl -fsS -H "Authorization: Bearer $1" "$2"
+    curl -fsS -H "Authorization: Bearer $1" "$2"
 }
 
 account_id() { api_get "$1" "$BASE/api/v1/accounts/verify_credentials" | jq -r .id; }
 
 post_status() {
-	local token=$1 id=$2 text=$3 existing
-	existing=$(api_get "$token" "$BASE/api/v1/accounts/$id/statuses?limit=40")
-	# `content` is HTML, so an apostrophe comes back as `&#39;`: compare the
-	# decoded text, or every seeded sentence with punctuation is posted again.
-	if printf '%s' "$existing" |
-		jq -e --arg text "$text" \
-			'map(select(.content
+    local token=$1 id=$2 text=$3 existing
+    existing=$(api_get "$token" "$BASE/api/v1/accounts/$id/statuses?limit=40")
+    # `content` is HTML, so an apostrophe comes back as `&#39;`: compare the
+    # decoded text, or every seeded sentence with punctuation is posted again.
+    if printf '%s' "$existing" |
+        jq -e --arg text "$text" \
+            'map(select(.content
 				| gsub("&#39;"; "\u0027")
 				| gsub("&#x27;"; "\u0027")
 				| gsub("&quot;"; "\u0022")
@@ -175,15 +181,15 @@ post_status() {
 				| gsub("&gt;"; ">")
 				| gsub("&amp;"; "&")
 				| contains($text))) | length > 0' \
-			>/dev/null; then
-		printf '  post already present for %s\n' "$text" >&2
-		return 0
-	fi
-	curl -fsS -X POST "$BASE/api/v1/statuses" \
-		-H "Authorization: Bearer $token" \
-		-H 'content-type: application/json' \
-		-d "$(jq -nc --arg text "$text" '{status: $text}')" >/dev/null
-	printf '  posted: %s\n' "$text" >&2
+            >/dev/null; then
+        printf '  post already present for %s\n' "$text" >&2
+        return 0
+    fi
+    curl -fsS -X POST "$BASE/api/v1/statuses" \
+        -H "Authorization: Bearer $token" \
+        -H 'content-type: application/json' \
+        -d "$(jq -nc --arg text "$text" '{status: $text}')" >/dev/null
+    printf '  posted: %s\n' "$text" >&2
 }
 
 # An unfollow purges a reader's timeline rows; re-following does not put them
@@ -194,8 +200,8 @@ post_status() {
 # design: no API re-fans a status, so keep this in step with `fan_out_home` or
 # the seed will hide the next fan-out bug.
 backfill_home() {
-	compose exec -T postgres psql -U nodus -d nodus -q -v ON_ERROR_STOP=1 \
-		-v accounts="$(printf '%s\n' "$@" | paste -sd, -)" <<'SQL'
+    compose exec -T postgres psql -U nodus -d nodus -q -v ON_ERROR_STOP=1 \
+        -v accounts="$(printf '%s\n' "$@" | paste -sd, -)" <<'SQL'
 WITH seeded AS (
   SELECT id, account_id FROM status
    WHERE account_id = ANY(string_to_array(:'accounts', ','))
@@ -208,21 +214,21 @@ SELECT f.account_id, s.id, 'home' FROM seeded s JOIN follow f
   ON f.target_account_id = s.account_id AND f.state = 'accepted'
 ON CONFLICT DO NOTHING;
 SQL
-	printf '  home timeline carries every seeded status\n' >&2
+    printf '  home timeline carries every seeded status\n' >&2
 }
 
 # The specs read ada's home timeline; ask first so a rerun adds no duplicate.
 follow() {
-	local token=$1 target=$2 label=$3 following
-	following=$(api_get "$token" \
-		"$BASE/api/v1/accounts/relationships?id%5B%5D=$target" | jq -r '.[0].following')
-	if [ "$following" = "true" ]; then
-		printf '  already following %s\n' "$label" >&2
-		return 0
-	fi
-	curl -fsS -X POST "$BASE/api/v1/accounts/$target/follow" \
-		-H "Authorization: Bearer $token" >/dev/null
-	printf '  now following %s\n' "$label" >&2
+    local token=$1 target=$2 label=$3 following
+    following=$(api_get "$token" \
+        "$BASE/api/v1/accounts/relationships?id%5B%5D=$target" | jq -r '.[0].following')
+    if [ "$following" = "true" ]; then
+        printf '  already following %s\n' "$label" >&2
+        return 0
+    fi
+    curl -fsS -X POST "$BASE/api/v1/accounts/$target/follow" \
+        -H "Authorization: Bearer $token" >/dev/null
+    printf '  now following %s\n' "$label" >&2
 }
 
 # ---- seed ----------------------------------------------------------------
@@ -249,11 +255,11 @@ follow "$ADMIN_TOKEN" "$GRACE_ID" grace
 # The fixtures the specs and the visual baselines read; prune-strays.sh keeps
 # every one of these and deletes anything else the seed accounts posted.
 SEED_POSTS=(
-	"Hello from Ada. This post comes from the integration lab."
-	"Ada's second note: the home timeline should show both accounts."
-	"Grace was here. This is real data served by the lab API."
-	"Grace's follow-up: profiles and timelines have something to render."
-	"Admin check-in: bootstrap login works over plain HTTP."
+    "Hello from Ada. This post comes from the integration lab."
+    "Ada's second note: the home timeline should show both accounts."
+    "Grace was here. This is real data served by the lab API."
+    "Grace's follow-up: profiles and timelines have something to render."
+    "Admin check-in: bootstrap login works over plain HTTP."
 )
 printf 'seeding posts ...\n'
 post_status "$ADA_TOKEN" "$ADA_ID" "${SEED_POSTS[0]}"
@@ -264,8 +270,8 @@ post_status "$ADMIN_TOKEN" "$ADMIN_ID" "${SEED_POSTS[4]}"
 
 printf 'pruning statuses a previous spec run left behind ...\n'
 "$SCRIPT_DIR/prune-strays.sh" "$BASE" \
-	"$ADA_TOKEN:$ADA_ID" "$GRACE_TOKEN:$GRACE_ID" "$ADMIN_TOKEN:$ADMIN_ID" \
-	-- "${SEED_POSTS[@]}"
+    "$ADA_TOKEN:$ADA_ID" "$GRACE_TOKEN:$GRACE_ID" "$ADMIN_TOKEN:$ADMIN_ID" \
+    -- "${SEED_POSTS[@]}"
 
 printf 'restoring the home timeline ...\n'
 backfill_home "$ADA_ID" "$GRACE_ID" "$ADMIN_ID"
