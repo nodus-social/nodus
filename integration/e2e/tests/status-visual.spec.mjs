@@ -2,6 +2,9 @@
 // seeded text, and the star is set through the UI so the baseline captures the
 // real active class and count. Favourite state is restored afterwards, because
 // the home-timeline baseline also contains this card.
+//
+// Admin signs in rather than ada: admin follows only local accounts, so this
+// baseline does not move when the federation peers are up.
 
 import { expect, test } from '@playwright/test';
 
@@ -11,7 +14,7 @@ import { signIn } from '../helpers/session.mjs';
 import { prepareVisualPage, volatileMasks } from '../helpers/visual.mjs';
 
 test('status card with a favourite', async ({ page }) => {
-  const session = await signIn(page, ACCOUNTS.ada);
+  const session = await signIn(page, ACCOUNTS.admin);
   const grace = await lookupAccount(page.request, session, 'grace');
   const target = await findStatusByText(page.request, session, grace.id, POSTS.graceFirst);
   expect(target, 'the seeded status is readable through the API').toBeTruthy();

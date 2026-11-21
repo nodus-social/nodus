@@ -25,6 +25,22 @@ export async function prepareVisualPage(page, scope) {
   await page.addStyleTag({
     content: 'header a[href*="/status/"] { display: inline-block; width: 4ch; text-align: right; }',
   });
+  // Playwright clips an element screenshot to the layout box rounded to device
+  // pixels, so an element whose top lands on a half pixel is captured one pixel
+  // taller from one page position than from the next: the same card measured
+  // 179px tall when the timeline above it held four rows and 178px when a peer
+  // post made that five. Put the scope on a whole-pixel scroll offset so where
+  // the page happens to be scrolled cannot reach the pixels.
+  await scope.evaluate((element) => {
+    const top = element.getBoundingClientRect().top + window.scrollY;
+    window.scrollTo(0, Math.round(top));
+  });
+  await expect
+    .poll(() => page.evaluate(() => window.scrollY === Math.round(window.scrollY)), {
+      message: 'the page sits on a whole-pixel scroll offset',
+      timeout: 5_000,
+    })
+    .toBe(true);
   await expect
     .poll(
       () =>
