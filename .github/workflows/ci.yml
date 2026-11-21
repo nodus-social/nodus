@@ -145,6 +145,12 @@ jobs:
         working-directory: nodus-backend
         run: cargo test --workspace
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
       - name: cargo check the web and sdk workspaces
         # `cargo test --workspace` above only compiles nodus-backend, so a
         # broken SSR binary (nodus-web-server) or SDK crate reached the lab
@@ -153,7 +159,15 @@ jobs:
         # host and the server cannot compile for wasm. rust-toolchain.toml
         # lists wasm32, but the image build installs the target explicitly,
         # so do the same rather than rely on rustup's handling of the file.
+        #
+        # Node is here because nodus-web-client's build script shells out to
+        # `npm ci` to regenerate the Tailwind stylesheet and the vendor
+        # bundles, and panics (crates/web-client/build.rs:125) when npm is not
+        # on PATH. Node 22 is the floor of `@tailwindcss/oxide` 4.x's engine
+        # range, so this is the same major the lab's web image pins.
+        #
         run: |
+          node --version
           (cd sdk && cargo check --workspace)
           (cd web && cargo check --workspace --exclude nodus-web-client)
           rustup target add wasm32-unknown-unknown
