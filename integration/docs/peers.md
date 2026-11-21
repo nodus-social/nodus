@@ -73,6 +73,94 @@ origin's plain-http escape hatch" below).
   (`crates/api/src/remote.rs`, `parse_target` and `outbound_client`) and always
   probes port 443 (`client_for_with`). See "What is proven" below.
 
+## TLS in the lab
+
+Both peers address a remote origin as `https://<domain>` and will not look anywhere else
+for a domain that is not `.onion`: Mastodon builds that URL in
+`app/lib/webfinger.rb:113-121` (`Webfinger#standard_url`), Misskey does the same when it
+delivers. A handle carries no port, so the name they dial is `nodus` on **443**. The lab
+origin therefore answers there as well as on `8080`:
+
+```text
+http://nodus:8080   host browsing (Playwright, up.sh) and the origin-to-peer direction
+https://nodus       what a peer dials when it resolves or verifies ada@nodus
+```
+
+`integration/Caddyfile` serves one route table on both entry points (`import routes`), so
+a federation request sees exactly the routes a browser sees. 443 is **not published on the
+host**: `compose.yml` only `expose`s it, because peers reach Caddy by container name on the
+`nodus-lab` bridge and host port 443 already belongs to something else.
+
+### The internal CA
+
+`tls internal` makes Caddy sign with its own CA — the lab has no internet-facing name and
+cannot use ACME. The root lives on the `nodus-data` volume:
+
+```sh
+docker exec nodus-lab-caddy cat /var/lib/nodus/caddy/pki/authorities/local/root.crt
+```
+
+`peers/ca/nodus-lab-ca.crt` in this repo is a copy of that root (subject
+`CN=Caddy Local Authority - 2026 ECC Root`). It is a **throwaway lab CA**: generated per
+lab, not a secret, of no value to anyone. It survives `docker compose restart caddy`, but
+`reset.sh` drops `nodus-data` and the authority is regenerated on the next start — after
+that the committed copy no longer verifies, so re-take it with the command above and
+recreate the peers.
+
+### How each peer trusts it
+
+The system bundle is never replaced; the lab root is added to what the image already
+trusts. Both read the same file, mounted read-only at `/certs/nodus-lab-ca.crt`.
+
+| peer | env var | mechanism |
+| --- | --- | --- |
+| Mastodon (web, sidekiq) | `SSL_CERT_FILE` | `peers/mastodon/ca-entrypoint.sh` copies `/etc/ssl/certs/ca-certificates.crt` and appends the lab root to it |
+| Misskey | `NODE_EXTRA_CA_CERTS` | Node appends the file to its built-in store |
+
+`SSL_CERT_FILE` names a *file*, so pointing it at the lab root alone would drop the public
+bundle — hence the concatenated copy, written to the container's tmpdir because
+`/etc/ssl/certs/ca-certificates.crt` is root-owned and the app runs as uid 991. The
+variable is declared in `compose.peers.yml` rather than exported by the entrypoint
+wrapper, because `docker exec` inherits the container's configured environment and not a
+shell's exports — which is what makes the checks below work.
+
+Verification is from inside the containers, on the same code paths the peers' own clients
+use:
+
+```sh
+docker exec nodus-lab-mastodon ruby -e \
+  'require "net/http"; puts Net::HTTP.get(URI("https://nodus/api/v1/meta"))'
+docker exec nodus-lab-misskey node -e \
+  'fetch("https://nodus/api/v1/meta").then(r=>r.text()).then(console.log)'
+# both print:
+# {"api":"1","contract":"0.1.0","min_contract":"0.1.0",
+#  "features":["feed_accounts","events","sync_token"]}
+
+docker exec nodus-lab-mastodon ruby -e \
+  'require "net/http"; r = Net::HTTP.get_response(URI("https://nodus/.well-known/webfinger?resource=acct:ada@nodus")); puts r.code; puts r.body'
+# 200
+# {"aliases":["http://nodus:8080/users/ada"],"links":[
+#   {"href":"http://nodus:8080/users/ada","rel":"self","type":"application/activity+json"},
+#   {"href":"http://nodus:8080/@ada","rel":"http://webfinger.net/rel/profile-page","type":"text/html"}],
+#  "subject":"acct:ada@nodus"}
+```
+
+The third is the exact call that used to fail with
+`Connection refused - connect(2) for 172.20.0.11:443 on https://nodus/.well-known/webfinger`.
+
+### What this leg does not change
+
+- **The origin still advertises `http://nodus:8080`.** `NODUS_BASE_URL` is untouched, so
+  the WebFinger above answers with `http` aliases and the actor's `id` stays `http://`.
+  Whether a peer then dereferences that actor is the next proof, not this plumbing.
+- **`NODUS_ALLOW_INSECURE_PEERS` is the other direction.** It names
+  `mastodon.local,misskey.local` for the origin's *outbound* calls, where the origin is the
+  client and the peer has no certificate. The TLS leg covers the opposite case: a peer as
+  the client, dialling the origin. Both hold at the same time.
+- **The inbound signature check is untouched.** A peer that signs with an `http` `keyId`
+  is still answered `401`; this leg only makes the origin's https name reachable and
+  verifiable.
+
 ## Mutable peer code is mounted, never edited in place
 
 Nothing in a running container is patched. The one peer file the lab has to
@@ -429,7 +517,10 @@ Mastodon-API client that hands a `status.uri` to a peer hands it a web page.
 For (a): TLS on the origin for the name its handles carry — `https://nodus` on
 443 with a certificate both peers trust (a lab CA in the Mastodon and Misskey
 trust stores) — because Mastodon's WebFinger client will not look at `http://`
-for a non-`.onion` domain.
+for a non-`.onion` domain. The ingress half of that now exists (see "TLS in the
+lab"): Caddy answers https on 443 with its internal CA, and both peers verify it.
+The backend half — advertising https URLs instead of `http://nodus:8080` — is
+still open, and the run below predates the TLS leg.
 
 For (b), (c) and (d): consult `NODUS_ALLOW_INSECURE_PEERS` in the inbound
 verifier too, i.e. let `validate_remote_url` (and the object-id filters built on

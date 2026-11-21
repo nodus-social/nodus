@@ -4,14 +4,22 @@
 # `handle` blocks are mutually exclusive and matched in the order they are written, which
 # is why the two shell routes come before the `/api/*` catch-all, why `/media/share/*`
 # comes before `/media/*`, and why the asset rule comes before the page fallback.
+#
+# Two entry points serve the same routes: http on 8080 for the host browser, and https on
+# 443 for the federation peers. They share one route table because a route that works for
+# a browser and not for a peer (or the reverse) is a federation bug, not a lab convenience.
 
 {
 	admin off
-	auto_https off
+	# The :8080 site is a bare port, so there is nothing to redirect; keeping
+	# certificate automation on is what lets `tls internal` issue for `nodus`. With
+	# `off`, Caddy disables cert automation outright and the 443 listener comes up
+	# without a connecting policy, answering the handshake with an internal error.
+	auto_https disable_redirects
 	storage file_system /var/lib/nodus/caddy
 }
 
-:8080 {
+(routes) {
 	encode zstd gzip
 
 	@wasm path *.wasm
@@ -101,4 +109,25 @@
 		}
 		header Cache-Control "no-store"
 	}
+}
+
+# Host-side browsing: Playwright and up.sh probe http://127.0.0.1:$NODUS_HTTP_PORT.
+# Keyed on the port alone, because the browser may arrive as 127.0.0.1, localhost or nodus.
+:8080 {
+	import routes
+}
+
+# The peers always address a remote origin as `https://<domain>`: Mastodon's
+# `Webfinger#standard_url` builds it from the handle's domain, which carries no port, and
+# Misskey does the same on delivery. So the name the origin advertises has to answer TLS
+# on 443, which is the port both of them dial.
+#
+# `tls internal` is Caddy's own CA: the lab has no internet-facing name and cannot use
+# ACME. The root of that CA is committed at peers/ca/root.crt and trusted inside the
+# Mastodon and Misskey containers (see docs/peers.md, "TLS in the lab"). The authority
+# lives on the nodus-data volume under /var/lib/nodus/caddy, so it survives a restart but
+# not a `reset.sh`; the extracted root has to be re-taken after a reset.
+https://nodus:443 {
+	tls internal
+	import routes
 }

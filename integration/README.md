@@ -92,7 +92,7 @@ All containers are named `nodus-lab-*`; nothing publishes 5432.
 | `nodus-prune` | `nodus-lab-prune` | same image, role `prune` | 3000 | none: gRPC worker |
 | `nodus-calc` | `nodus-lab-calc` | same image, role `calc` | 3000 | none: gRPC worker |
 | `nodus-web` | `nodus-lab-web` | `nodus-lab/web:0.1.0` | 3000 | `/healthz` |
-| `caddy` | `nodus-lab-caddy` | `nodus-lab/web:0.1.0` | **8080 → host** | `/healthz` through the proxy |
+| `caddy` | `nodus-lab-caddy` | `nodus-lab/web:0.1.0` | **8080 → host**, 443 in-network | `/healthz` through the proxy |
 
 One image per role rather than one all-in-one container: a test can restart a
 single process (`docker restart nodus-lab-feed`) without losing the others. The

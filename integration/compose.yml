@@ -245,6 +245,13 @@ services:
       dockerfile: ${NODUS_DOCKERFILE_WEB:-Dockerfile.web}
     container_name: nodus-lab-caddy
     restart: unless-stopped
+    # The image's nodus user owns /var/lib/nodus at build time, but the shared
+    # `nodus-data` volume is created and populated by whichever role comes up
+    # first, and in this lab that is the server image's uid 10001. Caddy keeps
+    # its PKI under /var/lib/nodus/caddy (the Caddyfile's `storage`), so a fixed
+    # unprivileged uid cannot write there; root is what the upstream caddy image
+    # uses as well, and this is the only container that needs a privileged port.
+    user: "0:0"
     command:
       - caddy
       - run
@@ -259,6 +266,12 @@ services:
       - nodus-data:/var/lib/nodus
     ports:
       - "${NODUS_HTTP_PORT:-8080}:8080"
+    # 443 is not published: the host already owns that port and nothing on the
+    # host needs to reach it. Peers resolve the network alias `nodus` and dial
+    # https on 443 inside `nodus-lab`, so the port only has to be open on the
+    # container's own interface.
+    expose:
+      - "443"
     networks:
       default:
         aliases:

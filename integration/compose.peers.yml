@@ -137,6 +137,9 @@ services:
     image: *image-mastodon
     container_name: nodus-lab-mastodon
     restart: unless-stopped
+    # tini stays PID 1; the wrapper it launches builds the trust bundle and then
+    # execs the command below.
+    entrypoint: ["/usr/bin/tini", "--", "/opt/mastodon/bin/lab-ca-entrypoint.sh"]
     command:
       - bundle
       - exec
@@ -154,7 +157,13 @@ services:
       - "80"
       - -b
       - 0.0.0.0
-    environment: *mastodon-environment
+    environment:
+      <<: *mastodon-environment
+      # Ruby reads SSL_CERT_FILE instead of the system bundle, so ca-entrypoint.sh writes
+      # a copy of the bundle with the lab root appended and this names it. It is set here
+      # and not in the wrapper because `docker exec` inherits this environment, not a
+      # shell's exports — the container checks in docs/peers.md depend on that.
+      SSL_CERT_FILE: /tmp/nodus-lab-ca-bundle.crt
     networks:
       default:
         aliases:
@@ -173,6 +182,10 @@ services:
       # is required for plain HTTP on the docker network; this shim supplies
       # the one gem constant the boot path reads. See the file header.
       - ./peers/mastodon/letter_opener_web_shim.rb:/opt/mastodon/config/initializers/0_letter_opener_web_shim.rb:ro
+      # Caddy's internal root, and the wrapper that folds it into a copy of the
+      # image's system bundle before Rails starts. See "TLS in the lab".
+      - ./peers/ca/nodus-lab-ca.crt:/certs/nodus-lab-ca.crt:ro
+      - ./peers/mastodon/ca-entrypoint.sh:/opt/mastodon/bin/lab-ca-entrypoint.sh:ro
     depends_on:
       mastodon-setup:
         condition: service_completed_successfully
@@ -190,10 +203,17 @@ services:
     container_name: nodus-lab-mastodon-sidekiq
     restart: unless-stopped
     command: ["bundle", "exec", "sidekiq"]
-    environment: *mastodon-environment
+    # Delivery is the process that dials a peer's https origin, so Sidekiq needs the
+    # same trust as the web process.
+    entrypoint: ["/usr/bin/tini", "--", "/opt/mastodon/bin/lab-ca-entrypoint.sh"]
+    environment:
+      <<: *mastodon-environment
+      SSL_CERT_FILE: /tmp/nodus-lab-ca-bundle.crt
     volumes:
       - mastodon-system:/mastodon/public/system
       - ./peers/mastodon/letter_opener_web_shim.rb:/opt/mastodon/config/initializers/0_letter_opener_web_shim.rb:ro
+      - ./peers/ca/nodus-lab-ca.crt:/certs/nodus-lab-ca.crt:ro
+      - ./peers/mastodon/ca-entrypoint.sh:/opt/mastodon/bin/lab-ca-entrypoint.sh:ro
     depends_on:
       mastodon-setup:
         condition: service_completed_successfully
@@ -280,6 +300,9 @@ services:
       # dereference a single one of its notes. Development mode is the peer's
       # own escape hatch and is lab-only; production peers keep the default.
       NODE_ENV: development
+      # Node appends this file to its built-in store, so both undici's fetch and
+      # any tls.connect client verify the origin's internal-CA certificate.
+      NODE_EXTRA_CA_CERTS: /certs/nodus-lab-ca.crt
     networks:
       default:
         aliases:
@@ -292,6 +315,7 @@ services:
       - "127.0.0.1:18082:18082"
     volumes:
       - ./peers/misskey:/misskey/.config:ro
+      - ./peers/ca/nodus-lab-ca.crt:/certs/nodus-lab-ca.crt:ro
       - misskey-files:/misskey/files
     depends_on:
       misskey-db:
