@@ -14,32 +14,50 @@ at `127.0.0.1:<port>`. Both are refused by the API on purpose
 guard — was wrong. Closed without a product change: the canonical origin is now
 `nodus.test` and the suite signs in there, so `X-Instance-Host` is a host name.
 
-## The federated timeline serves local posts only
+## Closed: the federated timeline serves local posts only
 
-`integration/e2e/tests/federation*.spec.mjs` shows peer-authored statuses
-through search, not through `/home/federated`. The reason is in the client
-request: `sdk/crates/mastodon/src/rest/api/mod.rs` sends
-`StreamKind::Federated` to `/api/v1/timelines/public` without `local=false`,
-and the API's default is `local=true` (`/api/v1/timelines/public?limit=20`
-returns the five seeded local posts, while `...&local=false` returns the
-three `alice@mastodon.test` posts first). Owner: `sdk` (Mastodon client).
+`/home/federated` now carries peer-authored statuses. The client still sends no
+`local` parameter (`sdk/crates/mastodon/src/rest/api/mod.rs`, `StreamKind::Federated`),
+which used to fall through to the API's `local=true` default; `server` `b02cb4b`
+("serve the federated timeline the federation it stores") made the absent
+parameter mean the federated view, so the gap closed on the API side and the
+pinned client needed no change. Covered by `tests/federation.spec.mjs`
+(`the federated timeline shows a peer-authored post`) and
+`tests/timelines.spec.mjs`.
 
-## A remote profile renders no posts
+## Closed: a remote profile renders no posts
 
-`/accounts/mastodon.test/alice` finds the account (header, follow verbs) but
-the Posts tab says `0 posts`, although
-`/api/v1/accounts/01m7y59g50akmfqj1x3x14wch8/statuses` returns the three
-delivered peer statuses. The account row's `statuses_count` is 0 too, so the
-screen trusts a number that was never updated for a remote account. Owner:
-`web-client` account screen / SDK store.
+`/accounts/mastodon.test/alice` lists the delivered peer statuses (owner:
+`server`, same `b02cb4b` window). Covered by
+`tests/federation.spec.mjs` (`a remote profile lists the account's posts`).
 
-## A remote status permalink cannot be read by the host browser
+## `statuses_count` is 0 in the API row for a remote account
 
-`/status/mastodon.test/{id}` parses and calls the public read proxy, which
-fetches `https://mastodon.test` from the web server; inside the lab that host
-is only reachable through the lab CA, so the screen reports
-`The instance could not be reached: HTTP 502`. Owner: `web-server`
-public-api proxy (or the lab network, if the proxy should trust the CA).
+Still open, and narrower than the entry this replaces: the profile's Posts tab
+renders the statuses, but the account row `statuses_count` is 0 for a remote
+account (`/api/v1/accounts/01m7yznagw96czhm7tzaqyk8w6`), so any screen that
+trusts the number shows `0 posts`. Owner: `server` accounts API — the counter is
+never recomputed on delivery.
+
+## A remote post's permalink is readable only without a session
+
+`/status/mastodon.test/{id}` is the form the shell paints (`rows.rs`
+`status_path(Some(&host), &inner.id)`) and it carries the id THIS origin minted.
+Two halves, two states:
+
+- Anonymous: `web-server` `63a3777` reads the origin's own stored row before the
+  peer (`public_api.rs` `local_read`, guarded by `token.is_none()`), so the
+  painted link renders. Covered by `tests/federation.spec.mjs`
+  (`an anonymous reader opens a remote post by the id this origin minted`).
+  It needs the lab wiring in `integration/compose.yml` (`nodus-web` gets
+  `NODUS_INSTANCE_HOST` and the lab CA), otherwise the self-read is refused as a
+  non-public host.
+- Signed in: the browser sends a token, `local_read` is skipped, and the proxy
+  relays the peer's own id to `https://mastodon.test`, which inside the lab is a
+  private address the SSRF guard refuses — `The instance could not be reached:
+  HTTP 502`. Owner: `web-server` public-api proxy (whether a signed-in read of a
+  peer's own id should also consult the stored row, or the lab should front the
+  peers on a name the guard trusts).
 
 ## Re-authenticating after a reload stops on the consent page
 
@@ -51,10 +69,11 @@ context. Owner: `web-client` OAuth handoff.
 
 ## The Local timeline renders no caption
 
-`tests/timelines.spec.mjs` keeps its Local/Federated row in `test.fixme`
-because the Local tab paints neither the "Posts from this instance." caption
-that `web/crates/route/src/route/mod.rs` defines nor the federated copy the
-row checks. The posts themselves render. Owner: `web-client` feed page.
+`tests/timelines.spec.mjs` keeps its Local row in `test.fixme` because the Local
+tab paints neither the "Posts from this instance." caption that
+`web/crates/route/src/route/mod.rs` defines nor the post copy the row checks.
+The posts themselves render, and the Federated half of that row now passes, so
+the fixme names the caption only. Owner: `web-client` feed page.
 
 ## Unfollow returns non-2xx
 

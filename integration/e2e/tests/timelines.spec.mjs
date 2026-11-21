@@ -15,12 +15,13 @@ import { navigate } from '../helpers/navigation.mjs';
 import { API_BASE, signIn } from '../helpers/session.mjs';
 
 // The seeded Home timeline is covered by home.spec.mjs. What this row adds is
-// the tab copy and the federated view, and those do not exist as promised: the
-// Local tab renders no caption at this build, and Federated lists local posts
-// only (integration/docs/e2e-gaps.md).
-test.fixme(
-  'the Local tab renders no caption and Federated serves local posts',
-  async ({ page }) => {
+// the Local tab's copy: the posts render but the caption
+// `web/crates/route/src/route/mod.rs` defines for that tab does not
+// (integration/docs/e2e-gaps.md). The Federated tab used to be part of this
+// fixme; it now serves the federation, and federation.spec.mjs covers it
+// (`the federated timeline shows a peer-authored post`), so the row names only
+// what is still broken.
+test.fixme('the Local tab renders no caption', async ({ page }) => {
   await signIn(page, ACCOUNTS.ada);
 
   // Ada follows both seeded authors, so both posts are on Home.
@@ -32,17 +33,7 @@ test.fixme(
   await expect(page.getByText('Posts from this instance.')).toBeVisible();
   await expect(page.getByText(POSTS.graceFirst)).toBeVisible();
   await expect(page.getByText(POSTS.adminFirst)).toBeVisible();
-
-  // The tab strip only exists on /home; the sidebar link returns there.
-  await page.getByRole('link', { name: 'Home', exact: true }).click();
-  await page.waitForURL(/\/home$/);
-  await page.getByRole('tab', { name: 'Federated' }).click();
-  await page.waitForURL(/\/home\/federated$/);
-  await expect(page.getByText('Posts from this instance.')).toBeVisible();
-  await expect(page.getByText(POSTS.graceFirst)).toBeVisible();
-  await expect(page.getByText(POSTS.adminFirst)).toBeVisible();
-  },
-);
+});
 
 // POST /api/v1/accounts/:id/unfollow returns non-2xx at this build, so the
 // state this row arranges through the API never exists. Owner: API.

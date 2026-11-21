@@ -17,7 +17,7 @@
 
 import { expect, test } from '@playwright/test';
 
-import { ACCOUNTS } from '../fixtures.mjs';
+import { ACCOUNTS, BROWSER_ORIGIN } from '../fixtures.mjs';
 import { navigate } from '../helpers/navigation.mjs';
 import { PEER_ACCT, requirePeerAccount, requirePeerStatus } from '../helpers/peers.mjs';
 import { signIn } from '../helpers/session.mjs';
@@ -75,9 +75,9 @@ test('a remote profile lists the account\'s posts', async ({ page }) => {
   await expect(post).toBeVisible();
 });
 
-// Gap: the permalink read proxies to the peer by address, and the lab's peer
-// resolves to a non-public IP, so the screen reports a failed read
-// (e2e-gaps.md, owner: web-server public-api proxy).
+// The peer's own address for the post, read signed in: the browser sends a
+// token, so the public proxy relays the read to the peer with it instead of
+// consulting this origin's stored copy.
 test('a remote post renders at its permalink', async ({ page }) => {
   const session = await signIn(page, ACCOUNTS.ada);
   const status = await requirePeerStatus(page.request, session, PEER_POST);
@@ -89,5 +89,33 @@ test('a remote post renders at its permalink', async ({ page }) => {
 
   await navigate(page, `/status/${address.host}/${id}`);
 
+  await expect(page.getByText(PEER_POST).first()).toBeVisible();
+});
+
+// The link the shell paints for a stored remote post names the peer but carries
+// the id THIS origin minted for its copy (web/crates/web-server/src/rows.rs,
+// `status_path(Some(&host), &inner.id)`): `/status/mastodon.test/<local ULID>`.
+// Only an anonymous caller reads the store for it: `public_api.rs` guards
+// `local_read` with `token.is_none()`, so the signed-in test above proxies to
+// the peer and keeps passing with `local_read` deleted. This one fails without
+// it — the id is not the peer's, so the peer answers 404.
+test('an anonymous reader opens a remote post by the id this origin minted', async ({
+  page,
+  browser,
+}) => {
+  // The lookup needs a token; the browser under test must not have one, so the
+  // session lives in its own context and is closed before the anonymous read.
+  const lookup = await browser.newContext({ baseURL: BROWSER_ORIGIN });
+  let status;
+  try {
+    const signedIn = await lookup.newPage();
+    const session = await signIn(signedIn, ACCOUNTS.ada);
+    status = await requirePeerStatus(signedIn.request, session, PEER_POST);
+  } finally {
+    await lookup.close();
+  }
+
+  // `status.id` is this origin's id for the stored copy, not the peer's id.
+  await page.goto(`/status/${PEER_HOST}/${status.id}`);
   await expect(page.getByText(PEER_POST).first()).toBeVisible();
 });
