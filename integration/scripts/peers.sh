@@ -218,7 +218,7 @@ mastodon_token() { # -> token on stdout, diagnostics on stderr
     # address, not the bare local username.
     response=$(curl -sS -X POST "$MASTODON_URL/oauth/token" \
         -d grant_type=password \
-        -d "username=$MASTODON_ACCOUNT@mastodon.local" \
+        -d "username=$MASTODON_ACCOUNT@mastodon.test" \
         -d "password=$(mastodon_password)" \
         -d "client_id=$client_id" \
         -d "client_secret=$client_secret" \
@@ -227,13 +227,13 @@ mastodon_token() { # -> token on stdout, diagnostics on stderr
 }
 
 seed_mastodon() {
-    printf '==> Mastodon: %s@mastodon.local\n' "$MASTODON_ACCOUNT"
+    printf '==> Mastodon: %s@mastodon.test\n' "$MASTODON_ACCOUNT"
     if mastodon_account_exists; then
         printf '  account already exists\n'
     else
         peer_compose exec -T mastodon bundle exec bin/tootctl accounts create \
             "$MASTODON_ACCOUNT" \
-            --email "$MASTODON_ACCOUNT@mastodon.local" \
+            --email "$MASTODON_ACCOUNT@mastodon.test" \
             --confirmed \
             --approve
     fi
@@ -256,7 +256,7 @@ seed_mastodon() {
         --arg username "$MASTODON_ACCOUNT" \
         --arg password "$(mastodon_password)" \
         --arg token "$token" \
-        --arg acct "$MASTODON_ACCOUNT@mastodon.local" \
+        --arg acct "$MASTODON_ACCOUNT@mastodon.test" \
         '{host: $host, username: $username, password: $password,
           token: $token, acct: $acct}' >"$STATE_DIR/mastodon-account.json"
     chmod 600 "$STATE_DIR/mastodon-account.json"
@@ -297,7 +297,7 @@ misskey_admin_token() {
 }
 
 seed_misskey() {
-    printf '==> Misskey: %s@misskey.local\n' "$MISSKEY_ACCOUNT"
+    printf '==> Misskey: %s@misskey.test\n' "$MISSKEY_ACCOUNT"
     install -d -m 700 "$STATE_DIR"
 
     local admin_token response token user_id existing
@@ -335,7 +335,7 @@ seed_misskey() {
         --arg username "$MISSKEY_ACCOUNT" \
         --arg password "$(misskey_password)" \
         --arg token "$token" \
-        --arg acct "$MISSKEY_ACCOUNT@misskey.local" \
+        --arg acct "$MISSKEY_ACCOUNT@misskey.test" \
         --arg adminToken "$admin_token" \
         '{host: $host, username: $username, password: $password,
           token: $token, acct: $acct, adminToken: $adminToken}' \
@@ -367,7 +367,7 @@ seed_nodus_token() {
 
 check_nodus_to_mastodon() {
     local token search account_id
-    printf '\n=== nodus -> Mastodon: ada follows alice@mastodon.local ===\n'
+    printf '\n=== nodus -> Mastodon: ada follows alice@mastodon.test ===\n'
     token=$(nodus_token)
     if [ -z "$token" ]; then
         printf 'skipped: no Nodus token (run peers.sh seed)\n'
@@ -377,15 +377,15 @@ check_nodus_to_mastodon() {
     printf -- '-- resolve by actor URL\n'
     # The canonical actor URL: Mastodon advertises its identity from WEB_DOMAIN,
     # which cannot carry a port, and every ActivityPub id it emits is https. Caddy
-    # owns `mastodon.local` on 443 and proxies to the web process, so this is the
+    # owns `mastodon.test` on 443 and proxies to the web process, so this is the
     # address the origin really fetches.
-    search=$(nodus_api GET "/api/v2/search?q=https%3A%2F%2Fmastodon.local%2Fusers%2F$MASTODON_ACCOUNT&resolve=true" "$token")
+    search=$(nodus_api GET "/api/v2/search?q=https%3A%2F%2Fmastodon.test%2Fusers%2F$MASTODON_ACCOUNT&resolve=true" "$token")
     printf '%s\n' "$search"
     account_id=$(printf '%s' "$search" | json_body | jq -r '.accounts[0].id // empty')
 
     if [ -z "$account_id" ]; then
         printf -- '-- resolve by handle\n'
-        search=$(nodus_api GET "/api/v2/search?q=$MASTODON_ACCOUNT%40mastodon.local&resolve=true" "$token")
+        search=$(nodus_api GET "/api/v2/search?q=$MASTODON_ACCOUNT%40mastodon.test&resolve=true" "$token")
         printf '%s\n' "$search"
         account_id=$(printf '%s' "$search" | json_body | jq -r '.accounts[0].id // empty')
     fi
@@ -446,13 +446,22 @@ check_mastodon_to_nodus() {
 }
 
 check_misskey_to_nodus() {
-    printf '\n=== Misskey -> nodus: alice@misskey.local follows ada@nodus ===\n'
+    printf '\n=== Misskey -> nodus: alice@misskey.test follows ada@nodus ===\n'
     if [ ! -f "$STATE_DIR/misskey-account.json" ] || [ -z "$(nodus_token)" ]; then
         printf 'skipped: missing Misskey or Nodus token (run peers.sh seed)\n'
         return 1
     fi
     local token user_id response note_id before after note_status note_address
     token=$(jq -r .token "$STATE_DIR/misskey-account.json")
+
+    # Nodus verifies a signature by fetching the signer through the ActivityPub
+    # client, whose resolver refuses private addresses even when
+    # NODUS_ALLOW_PRIVATE_HOSTS names them. The origin's own resolve does honour
+    # the allowlist, so resolving alice here caches her key and the deliveries
+    # below pass signature verification. See docs/peers.md, "(c)".
+    printf -- '-- resolve alice@misskey.test through nodus (caches her key)\n'
+    nodus_api GET '/api/v2/search?q=%40alice%40misskey.test&resolve=true' \
+        "$(nodus_token)" >/dev/null
 
     printf -- '-- resolve by actor URL via ap/show\n'
     # WebFinger for `nodus` builds https://nodus, which Caddy answers on 443;

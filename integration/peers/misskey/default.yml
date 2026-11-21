@@ -10,7 +10,7 @@
 # `<scheme>://<host>` from the id it was handed and never appends a port. The
 # container itself still listens on 18082, which Caddy proxies to and which is
 # also the published host port.
-url: https://misskey.local/
+url: https://misskey.test/
 port: 18082
 
 # Stock PostgreSQL 15+: Misskey 2024.11 does not use pg_roaringbitmap.
@@ -35,7 +35,8 @@ id: aidx
 # not needed on a trusted lab network.
 signToActivityPubGet: false
 
-# Plain HTTP peers must not emit HSTS for a .local origin.
+# The lab peer answers over https with an internal CA on `.test`; HSTS buys
+# nothing there and would poison the host browser's view of the name.
 disableHsts: true
 
 # Docker bridge ranges. Misskey otherwise refuses to dereference actors that

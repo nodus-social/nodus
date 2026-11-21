@@ -50,10 +50,10 @@ x-peer-images:
 x-mastodon-environment: &mastodon-environment
   RAILS_ENV: development
   # The identity peers see and the identity the web UI is served from.
-  LOCAL_DOMAIN: mastodon.local
-  WEB_DOMAIN: mastodon.local
+  LOCAL_DOMAIN: mastodon.test
+  WEB_DOMAIN: mastodon.test
   # 1_hosts.rb forces https only in production; development honours this. It is
-  # on because Caddy serves `https://mastodon.local` (443) and proxies to the
+  # on because Caddy serves `https://mastodon.test` (443) and proxies to the
   # web process, and every URL Mastodon advertises has to be the one a peer can
   # actually dial. ActivityPub ids are https in development either way; this
   # makes WebFinger and the HTML links agree with them.
@@ -79,7 +79,7 @@ x-mastodon-environment: &mastodon-environment
   # The web process cannot reach a streaming server in this lab; the API and
   # federation do not need one. Kept on the canonical host so generated
   # links do not point at a random compose service.
-  STREAMING_API_BASE_URL: http://mastodon.local
+  STREAMING_API_BASE_URL: http://mastodon.test
 
 services:
   # -------------------------------------------------------------------------
@@ -152,9 +152,9 @@ services:
       - -p
       # Port 80, not 3000: Mastodon builds every actor, inbox and status URL
       # from WEB_DOMAIN, which cannot carry a port, so the address it advertises
-      # to peers is https://mastodon.local/... (ActivityPub ids are https even
+      # to peers is https://mastodon.test/... (ActivityPub ids are https even
       # in development). Serving the app on 80 inside the network makes that
-      # advertisement real behind Caddy, which owns `mastodon.local` on 443 and
+      # advertisement real behind Caddy, which owns `mastodon.test` on 443 and
       # proxies here; the origin posts a Follow to the shared inbox it was told
       # about and lands on 80. The image runs as uid 991 and docker already
       # sets net.ipv4.ip_unprivileged_port_start=0, so binding 80 needs no
@@ -169,16 +169,16 @@ services:
       # and not in the wrapper because `docker exec` inherits this environment, not a
       # shell's exports — the container checks in docs/peers.md depend on that.
       SSL_CERT_FILE: /tmp/nodus-lab-ca-bundle.crt
-    # No `mastodon.local` alias: the name belongs to Caddy on :443 (the
+    # No `mastodon.test` alias: the name belongs to Caddy on :443 (the
     # Caddyfile's peer site blocks), and a second container answering to it
     # would make the name resolve to two addresses on `nodus-lab`. Peers reach
     # this service as `mastodon:80`, which compose already publishes.
     networks:
       default: {}
     # Optional: the peer UI is not needed for federation. With this published,
-    # a browser that maps `127.0.0.1 mastodon.local` can load
-    # http://mastodon.local:18081. Mastodon's canonical URLs still carry no
-    # port (WEB_DOMAIN=mastodon.local), so most links and assets point at
+    # a browser that maps `127.0.0.1 mastodon.test` can load
+    # http://mastodon.test:18081. Mastodon's canonical URLs still carry no
+    # port (WEB_DOMAIN=mastodon.test), so most links and assets point at
     # port 80 on the host, which nothing serves. See docs/peers.md before
     # trying to click around.
     ports:
@@ -307,11 +307,11 @@ services:
       # Node appends this file to its built-in store, so both undici's fetch and
       # any tls.connect client verify the origin's internal-CA certificate.
       NODE_EXTRA_CA_CERTS: /certs/nodus-lab-ca.crt
-    # No `misskey.local` alias: Caddy owns the name on :443 and proxies here
+    # No `misskey.test` alias: Caddy owns the name on :443 and proxies here
     # (Caddyfile, peer site blocks). The service answers as `misskey:18082`.
     networks:
       default: {}
-    # Misskey's canonical URL is https://misskey.local, which Caddy serves; the
+    # Misskey's canonical URL is https://misskey.test, which Caddy serves; the
     # published port is only the host-side UI, where the container still
     # listens on 18082 directly.
     ports:
@@ -341,12 +341,14 @@ services:
   # compose.yml does not forward NODUS_ALLOW_PRIVATE_HOSTS to the API even
   # though .env.example documents it. The flag only lifts the private-IP half
   # of the resolver guard; the HTTPS requirement and the disallowed-suffix
-  # list (.local is one of them) still apply, so it does not by itself make an
-  # HTTP peer resolvable. It is set here so the lab's documented knob does what
-  # the README says and so a future HTTPS peer needs no compose change.
+  # list (localhost, .local, .internal, .home.arpa) still apply. The peers use
+  # `.test` (RFC 6761), which is not on that list, so this knob is not what
+  # makes inbound work — it stays set so the lab's documented knob does what
+  # the README says and so a future peer on a private address needs no compose
+  # change.
   nodus-api:
     environment:
-      NODUS_ALLOW_PRIVATE_HOSTS: mastodon.local,misskey.local,mastodon,misskey
+      NODUS_ALLOW_PRIVATE_HOSTS: mastodon.test,misskey.test,mastodon,misskey
 
 volumes:
   mastodon-db-data:

@@ -301,8 +301,8 @@ services:
           # names so that `<name>:443` is unambiguous on the network: a peer
           # container must not also answer to its own advertised name, or
           # Docker's DNS would hand out two addresses for it.
-          - mastodon.local
-          - misskey.local
+          - mastodon.test
+          - misskey.test
     depends_on:
       nodus-api:
         condition: service_healthy

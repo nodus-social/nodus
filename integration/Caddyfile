@@ -144,13 +144,13 @@ https://nodus:443 {
 # These blocks deliberately do not `import routes`: the route table is the origin's, and a
 # peer name must never resolve an origin path. Like the origin's 443 site, they are not
 # published on the host — peers dial them by container name.
-https://mastodon.local {
+https://mastodon.test {
 	tls internal
 	encode zstd gzip
 	reverse_proxy mastodon:80
 }
 
-https://misskey.local {
+https://misskey.test {
 	tls internal
 	encode zstd gzip
 	reverse_proxy misskey:18082

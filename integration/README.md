@@ -243,7 +243,7 @@ the setup and seeding steps in order.
 
 ```sh
 integration/scripts/peers.sh up      # start, generate secrets, wait for health
-integration/scripts/peers.sh seed    # alice@mastodon.local, alice@misskey.local
+integration/scripts/peers.sh seed    # alice@mastodon.test, alice@misskey.test
 integration/scripts/peers.sh status
 integration/scripts/peers.sh follow  # the federation directions
 integration/scripts/peers.sh down    # stop, keep peer data
