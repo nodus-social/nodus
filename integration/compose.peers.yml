@@ -373,6 +373,23 @@ services:
     environment:
       NODUS_ALLOW_PRIVATE_HOSTS: mastodon.test,misskey.test,mastodon,misskey
 
+  # The shell renders the same federation the API serves, so it resolves the
+  # same private names: a remote permalink is read through this origin first
+  # and only then from the peer, and both of those names answer on the lab
+  # network. `nodus.test` is its own name here because the local-first read is
+  # an HTTPS request back through Caddy, not an in-process call. It also needs
+  # the lab root for the same reason the API does: SSL_CERT_FILE names the
+  # bundle the entrypoint builds, and without it every peer fetch stops at
+  # certificate verification.
+  nodus-web:
+    entrypoint: ["/usr/bin/tini", "--", "/opt/nodus/bin/lab-ca-entrypoint.sh"]
+    environment:
+      NODUS_ALLOW_PRIVATE_HOSTS: nodus.test,mastodon.test,misskey.test,mastodon,misskey
+      SSL_CERT_FILE: /tmp/nodus-lab-ca-bundle.crt
+    volumes:
+      - ./state/ca/nodus-lab-ca.crt:/certs/nodus-lab-ca.crt:ro
+      - ./peers/ca/nodus-ca-entrypoint.sh:/opt/nodus/bin/lab-ca-entrypoint.sh:ro
+
 volumes:
   mastodon-db-data:
     name: nodus-lab-mastodon-db
