@@ -375,6 +375,58 @@ seed_nodus_token() {
     chmod 600 "$STATE_DIR/nodus-account.json"
 }
 
+# Mastodon fans a status out to the followers it already knows about, and ada's
+# Follow reaches it through an ingress queue. A status posted straight after the
+# follow can be created while ada is still a pending request, is never delivered
+# to the origin, and the federation specs then have nothing to render. These two
+# polls turn that race into a wait: first for Mastodon to list the follower, then
+# for the origin to store the status.
+mastodon_follower_count() {
+    local token search
+    token=$(jq -r .token "$STATE_DIR/mastodon-account.json")
+    search=$(mastodon_api GET '/api/v2/search?q=%40ada%40nodus&resolve=true&type=accounts' "$token")
+    printf '%s\n' "$search" | json_body | jq -r '.accounts[0].followers_count // 0'
+}
+
+wait_for_mastodon_follower() {
+    local attempt=0
+    while [ "$attempt" -lt 30 ]; do
+        if [ "$(mastodon_follower_count)" -ge 1 ]; then
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        sleep 1
+    done
+    printf 'RESULT: Mastodon never listed ada@nodus as a follower\n'
+    return 1
+}
+
+# The origin stores a delivered peer status and serves it from search, but its
+# home timeline is built from the local follow graph, which is not the same
+# question. Ask for the peer account's own statuses instead.
+nodus_has_peer_status() {
+    local token account_id
+    token=$(nodus_token)
+    account_id=$(nodus_api GET "/api/v2/search?q=%40$MASTODON_ACCOUNT%40mastodon.test&resolve=true&type=accounts" "$token" |
+        json_body | jq -r '.accounts[0].id // empty')
+    [ -n "$account_id" ] || return 1
+    nodus_api GET "/api/v1/accounts/$account_id/statuses?limit=40" "$token" | json_body |
+        jq -e 'length > 0' >/dev/null
+}
+
+wait_for_nodus_ingest() {
+    local attempt=0
+    while [ "$attempt" -lt 30 ]; do
+        if nodus_has_peer_status; then
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        sleep 1
+    done
+    printf 'RESULT: the origin did not ingest a peer-authored status\n'
+    return 1
+}
+
 check_nodus_to_mastodon() {
     local token search account_id
     printf '\n=== nodus -> Mastodon: ada follows alice@mastodon.test ===\n'
@@ -407,12 +459,21 @@ check_nodus_to_mastodon() {
     printf -- '-- follow account %s\n' "$account_id"
     nodus_api POST "/api/v1/accounts/$account_id/follow" "$token" '{}'
 
-    printf -- '-- post from Mastodon\n'
-    mastodon_api POST /api/v1/statuses "$(jq -r .token "$STATE_DIR/mastodon-account.json")" \
-        '{"status":"hello from mastodon, follows are live","visibility":"public"}' >/dev/null
-    sleep 3
+    printf -- '-- wait for Mastodon to accept the follow\n'
+    local failed=0
+    wait_for_mastodon_follower || failed=1
+    if nodus_has_peer_status; then
+        printf -- '-- the origin already holds a peer status, not posting another\n'
+    else
+        printf -- '-- post from Mastodon\n'
+        mastodon_api POST /api/v1/statuses "$(jq -r .token "$STATE_DIR/mastodon-account.json")" \
+            '{"status":"hello from mastodon, follows are live","visibility":"public"}' >/dev/null
+        printf -- '-- wait for the origin to ingest it\n'
+        wait_for_nodus_ingest || failed=1
+    fi
     printf -- '-- ada home timeline\n'
     nodus_api GET '/api/v1/timelines/home?limit=10' "$token"
+    return "$failed"
 }
 
 check_mastodon_to_nodus() {
