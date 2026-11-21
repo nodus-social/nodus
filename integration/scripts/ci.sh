@@ -34,8 +34,14 @@
 # Logs are written to integration/.act/ (git-ignored).
 set -euo pipefail
 
-SCRIPT_DIR=$(unset CDPATH; cd -- "$(dirname -- "$0")" && pwd)
-REPO_DIR=$(unset CDPATH; cd -- "$SCRIPT_DIR/../.." && pwd)
+SCRIPT_DIR=$(
+    unset CDPATH
+    cd -- "$(dirname -- "$0")" && pwd
+)
+REPO_DIR=$(
+    unset CDPATH
+    cd -- "$SCRIPT_DIR/../.." && pwd
+)
 WORKFLOW="$REPO_DIR/.github/workflows/ci.yml"
 LOG_DIR="$REPO_DIR/integration/.act"
 
@@ -47,181 +53,199 @@ DIND_PORT=${CI_DIND_PORT:-2375}
 DIND_HOST="tcp://127.0.0.1:${DIND_PORT}"
 
 usage() {
-	sed -n '2,36p' "$SCRIPT_DIR/ci.sh" | sed 's/^# \{0,1\}//'
+    sed -n '2,36p' "$SCRIPT_DIR/ci.sh" | sed 's/^# \{0,1\}//'
 }
 
 die() {
-	printf 'ci.sh: %s\n' "$*" >&2
-	exit 1
+    printf 'ci.sh: %s\n' "$*" >&2
+    exit 1
 }
 
 require_docker() {
-	command -v docker >/dev/null || die "docker is required"
-	docker info >/dev/null 2>&1 || die "the docker daemon is not reachable"
+    command -v docker >/dev/null || die "docker is required"
+    docker info >/dev/null 2>&1 || die "the docker daemon is not reachable"
 }
 
 # act is a single static binary; keep it beside the other user tools rather than
 # in /tmp (tmpfs on this host) or a root-owned prefix.
 ensure_act() {
-	if command -v act >/dev/null 2>&1; then
-		return 0
-	fi
-	local target="$HOME/.local/bin"
-	printf 'installing act v%s into %s ...\n' "$ACT_VERSION" "$target"
-	mkdir -p "$target" "$LOG_DIR"
-	local archive="$LOG_DIR/act_Linux_x86_64.tar.gz"
-	curl -fsSL --retry 2 \
-		"https://github.com/nektos/act/releases/download/v${ACT_VERSION}/act_Linux_x86_64.tar.gz" \
-		-o "$archive" || die "could not download act v${ACT_VERSION}"
-	tar -xzf "$archive" -C "$target" act || die "could not unpack $archive"
-	chmod +x "$target/act"
-	export PATH="$target:$PATH"
-	command -v act >/dev/null || die "act was installed to $target but is not on PATH"
+    if command -v act >/dev/null 2>&1; then
+        return 0
+    fi
+    local target="$HOME/.local/bin"
+    printf 'installing act v%s into %s ...\n' "$ACT_VERSION" "$target"
+    mkdir -p "$target" "$LOG_DIR"
+    local archive="$LOG_DIR/act_Linux_x86_64.tar.gz"
+    curl -fsSL --retry 2 \
+        "https://github.com/nektos/act/releases/download/v${ACT_VERSION}/act_Linux_x86_64.tar.gz" \
+        -o "$archive" || die "could not download act v${ACT_VERSION}"
+    tar -xzf "$archive" -C "$target" act || die "could not unpack $archive"
+    chmod +x "$target/act"
+    export PATH="$target:$PATH"
+    command -v act >/dev/null || die "act was installed to $target but is not on PATH"
 }
 
 dind_running() {
-	docker ps --format '{{.Names}}' | grep -qx "$DIND_CONTAINER"
+    docker ps --format '{{.Names}}' | grep -qx "$DIND_CONTAINER"
 }
 
 wait_for_dind() {
-	local i=0
-	while [ "$i" -lt 60 ]; do
-		if docker -H "$DIND_HOST" info >/dev/null 2>&1; then
-			return 0
-		fi
-		i=$((i + 1))
-		sleep 1
-	done
-	docker logs --tail 20 "$DIND_CONTAINER" >&2 || true
-	die "dind did not become reachable at $DIND_HOST"
+    local i=0
+    while [ "$i" -lt 60 ]; do
+        if docker -H "$DIND_HOST" info >/dev/null 2>&1; then
+            return 0
+        fi
+        i=$((i + 1))
+        sleep 1
+    done
+    docker logs --tail 20 "$DIND_CONTAINER" >&2 || true
+    die "dind did not become reachable at $DIND_HOST"
 }
 
 cmd_up() {
-	require_docker
-	mkdir -p "$LOG_DIR"
-	if dind_running; then
-		wait_for_dind
-		printf 'dind already running: %s\n' "$DIND_HOST"
-		return 0
-	fi
-	docker rm -f "$DIND_CONTAINER" >/dev/null 2>&1 || true
-	# TLS is off on purpose: the image then serves the API on 0.0.0.0:2375, which
-	# --network host makes reachable as 127.0.0.1:2375 for the duration of a local
-	# run. Do not add --host here; dockerd-entrypoint.sh already passes one.
-	docker run -d --name "$DIND_CONTAINER" \
-		--privileged --network host \
-		-e DOCKER_TLS_CERTDIR= \
-		-v "${DIND_CONTAINER}-data:/var/lib/docker" \
-		"$ACT_DIND_IMAGE" >/dev/null
-	wait_for_dind
-	printf 'dind listening on %s\n' "$DIND_HOST"
+    require_docker
+    mkdir -p "$LOG_DIR"
+    if dind_running; then
+        wait_for_dind
+        printf 'dind already running: %s\n' "$DIND_HOST"
+        return 0
+    fi
+    docker rm -f "$DIND_CONTAINER" >/dev/null 2>&1 || true
+    # TLS is off on purpose: the image then serves the API on 0.0.0.0:2375, which
+    # --network host makes reachable as 127.0.0.1:2375 for the duration of a local
+    # run. Do not add --host here; dockerd-entrypoint.sh already passes one.
+    docker run -d --name "$DIND_CONTAINER" \
+        --privileged --network host \
+        -e DOCKER_TLS_CERTDIR= \
+        -v "${DIND_CONTAINER}-data:/var/lib/docker" \
+        "$ACT_DIND_IMAGE" >/dev/null
+    wait_for_dind
+    printf 'dind listening on %s\n' "$DIND_HOST"
 }
 
 cmd_down() {
-	if dind_running; then
-		docker rm -f "$DIND_CONTAINER" >/dev/null
-		printf 'stopped %s\n' "$DIND_CONTAINER"
-	fi
+    if dind_running; then
+        # No -v: the named volume is the image cache, and re-pulling Postgres,
+        # the Playwright image and the lab base images is the slow part of a
+        # cold `lab` run.
+        docker rm -f "$DIND_CONTAINER" >/dev/null
+        printf 'stopped %s (volume %s-data kept)\n' "$DIND_CONTAINER" "$DIND_CONTAINER"
+    fi
 }
 
 # Maps ci.sh's --job to act's -j and keeps every other argument for act.
 run_act() {
-	ensure_act
-	cmd_up
+    ensure_act
+    cmd_up
 
-	local jobs=()
-	local passthrough=()
-	while [ "$#" -gt 0 ]; do
-		case "$1" in
-		--job)
-			[ "$#" -ge 2 ] || die "--job needs a value"
-			jobs+=(-j "$2")
-			shift 2
-			;;
-		--job=*)
-			jobs+=(-j "${1#*=}")
-			shift
-			;;
-		*)
-			passthrough+=("$1")
-			shift
-			;;
-		esac
-	done
+    local jobs=()
+    local passthrough=()
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+        --job)
+            [ "$#" -ge 2 ] || die "--job needs a value"
+            jobs+=(-j "$2")
+            shift 2
+            ;;
+        --job=*)
+            jobs+=(-j "${1#*=}")
+            shift
+            ;;
+        *)
+            passthrough+=("$1")
+            shift
+            ;;
+        esac
+    done
 
-	local args=(
-		workflow_dispatch
-		-W "$WORKFLOW"
-		-P "ubuntu-24.04=${ACT_IMAGE}"
-		--container-architecture linux/amd64
-		--env "DOCKER_HOST=${DIND_HOST}"
-	)
-	# The lab job's nested docker and published ports need the host network
-	# (dind is `--network host` too). The rust-tests service container is reached
-	# as `postgres:5432`, which only resolves on act's own bridge network, so do
-	# not force host networking for a job that does not need it.
-	local host_network=0
-	if [ "${#jobs[@]}" -eq 0 ]; then
-		host_network=1
-	else
-		for candidate in "${jobs[@]}"; do
-			[ "$candidate" = lab ] && host_network=1
-		done
-	fi
-	if [ "$host_network" -eq 1 ]; then
-		args+=(--network host)
-	fi
-	if [ -n "${LAB_HTTP_PORT:-}" ]; then
-		args+=(--env "LAB_HTTP_PORT=${LAB_HTTP_PORT}")
-	fi
-	if [ -n "${NODUS_HTTPS_PORT:-}" ]; then
-		args+=(--env "NODUS_HTTPS_PORT=${NODUS_HTTPS_PORT}")
-	fi
-	args+=("${jobs[@]}" "${passthrough[@]}")
+    local args=(
+        workflow_dispatch
+        -W "$WORKFLOW"
+        -P "ubuntu-24.04=${ACT_IMAGE}"
+        --container-architecture linux/amd64
+        # Without this, act copies the workspace into the job container with
+        # `docker cp`, and the copy included nodus-backend/target (128 GB) and
+        # web/target (136 GB): the first rust-tests attempt never got as far as
+        # its first step. A bind also means the container's cargo writes the
+        # same target/ a local `cargo test` uses, so the compile is shared.
+        --bind
+        --env "DOCKER_HOST=${DIND_HOST}"
+    )
+    # The lab job's nested docker and published ports need the host network
+    # (dind is `--network host` too). The rust-tests service container is reached
+    # as `postgres:5432`, which only resolves on act's own bridge network, so do
+    # not force host networking for a job that does not need it.
+    local host_network=0
+    if [ "${#jobs[@]}" -eq 0 ]; then
+        host_network=1
+    else
+        for candidate in "${jobs[@]}"; do
+            [ "$candidate" = lab ] && host_network=1
+        done
+    fi
+    if [ "$host_network" -eq 1 ]; then
+        args+=(--network host)
+    fi
+    if [ -n "${LAB_HTTP_PORT:-}" ]; then
+        args+=(--env "LAB_HTTP_PORT=${LAB_HTTP_PORT}")
+    fi
+    if [ -n "${NODUS_HTTPS_PORT:-}" ]; then
+        args+=(--env "NODUS_HTTPS_PORT=${NODUS_HTTPS_PORT}")
+    fi
+    args+=("${jobs[@]}" "${passthrough[@]}")
 
-	local label=all
-	if [ "${#jobs[@]}" -gt 0 ]; then
-		label=${jobs[1]}
-	fi
-	mkdir -p "$LOG_DIR"
-	local log="$LOG_DIR/run-${label}.log"
-	printf 'act %s (log: %s)\n' "${args[*]}" "$log"
-	set +e
-	(
-		cd "$REPO_DIR"
-		act "${args[@]}" 2>&1 | tee "$log"
-		exit "${PIPESTATUS[0]}"
-	)
-	local status=$?
-	set -e
-	[ "$status" -eq 0 ] || printf 'act exited %s; see %s\n' "$status" "$log" >&2
-	return "$status"
+    local label=all
+    if [ "${#jobs[@]}" -gt 0 ]; then
+        label=${jobs[1]}
+    fi
+    mkdir -p "$LOG_DIR"
+    local log="$LOG_DIR/run-${label}.log"
+    printf 'act %s (log: %s)\n' "${args[*]}" "$log"
+    set +e
+    (
+        cd "$REPO_DIR"
+        act "${args[@]}" 2>&1 | tee "$log"
+        exit "${PIPESTATUS[0]}"
+    )
+    local status=$?
+    set -e
+    [ "$status" -eq 0 ] || printf 'act exited %s; see %s\n' "$status" "$log" >&2
+    return "$status"
 }
 
 finish() {
-	if [ "${CI_KEEP_DIND:-0}" != 1 ]; then
-		cmd_down || true
-	fi
+    if [ "${CI_KEEP_DIND:-0}" != 1 ]; then
+        cmd_down || true
+    fi
 }
 
 command=${1:-all}
 case "$command" in
-up) shift; cmd_up "$@" ;;
-down) shift; cmd_down "$@" ;;
-run) shift; run_act "$@" ;;
+up)
+    shift
+    cmd_up "$@"
+    ;;
+down)
+    shift
+    cmd_down "$@"
+    ;;
+run)
+    shift
+    run_act "$@"
+    ;;
 all)
-	shift
-	trap finish EXIT
-	run_act "$@"
-	;;
+    shift
+    trap finish EXIT
+    run_act "$@"
+    ;;
 preflight | rust-tests | lab | gate)
-	trap finish EXIT
-	run_act --job "$command" "${@:2}"
-	;;
+    trap finish EXIT
+    run_act --job "$command" "${@:2}"
+    ;;
 -h | --help | help) usage ;;
 *)
-	printf 'unknown command: %s\n\n' "$command" >&2
-	usage >&2
-	exit 2
-	;;
+    printf 'unknown command: %s\n\n' "$command" >&2
+    usage >&2
+    exit 2
+    ;;
 esac

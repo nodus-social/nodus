@@ -26,6 +26,15 @@ integration/scripts/ci.sh down                 # stop Docker-in-Docker
 
 - `-P ubuntu-24.04=catthehacker/ubuntu:act-24.04` — the runner image closest to
   GitHub's `ubuntu-24.04`;
+- `--bind` — the workspace is bind-mounted into the job container, not copied
+  into it. act's default `docker cp` of this checkout copies the build output
+  too (`nodus-backend/target` is 128 GB, `web/target` 136 GB), which is where
+  the first `rust-tests` attempt died before its first step; the bind also
+  means the container's cargo compiles into the same `target/` a local
+  `cargo test` uses, so the two share a compile instead of each paying for one.
+  The price is that the container runs as root and leaves root-owned files in
+  `target/`; run `cargo test` as root in the container or `sudo chown -R` the
+  touched crates afterwards if a later host-side build complains;
 - `DOCKER_HOST=tcp://127.0.0.1:2375` — so the `lab` job's `docker build` and
   `docker compose` use the dind daemon instead of the host's socket;
 - `--network host` for the `lab` job (and a whole-workflow run), because its
@@ -35,9 +44,17 @@ integration/scripts/ci.sh down                 # stop Docker-in-Docker
   resolves.
 
 Act is installed into `~/.local/bin` on first use (`ACT_VERSION`, default
-0.2.98). Logs land in `integration/.act/` (git-ignored). The dind image layer
-cache lives in a named volume, so repeated runs rebuild less; `CI_KEEP_DIND=1`
-leaves the daemon up between invocations.
+0.2.98). Logs land in `integration/.act/` (git-ignored).
+
+The dind daemon's `/var/lib/docker` is the named volume
+`nodus-act-dind-data`, and `ci.sh down` removes the container without `-v`, so
+the volume survives: a second `lab` run reuses the cached Postgres, Playwright
+and lab base images instead of pulling them again. `CI_KEEP_DIND=1` goes
+further and leaves the daemon itself up between invocations. Note the split:
+act starts the *job* and *service* containers (the `catthehacker` runner,
+`rust:1-bookworm`, `pgvector/pgvector:pg17`) on the host daemon, so those layers
+are cached by docker there; only the images the `lab` job builds and pulls
+through `DOCKER_HOST` live in the dind volume.
 
 ## Prerequisites
 
