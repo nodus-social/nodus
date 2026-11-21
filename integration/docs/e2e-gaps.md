@@ -38,3 +38,17 @@ valid session, clears the stored record, and drives the OAuth helper again.
 The login form accepts the credentials, the consent page appears, but the
 callback never returns to `/home`; the same helper works from a fresh
 context. Owner: `web-client` OAuth handoff.
+
+## The Local timeline renders no caption
+
+`tests/timelines.spec.mjs` keeps its Local/Federated row in `test.fixme`
+because the Local tab paints neither the "Posts from this instance." caption
+that `web/crates/route/src/route/mod.rs` defines nor the federated copy the
+row checks. The posts themselves render. Owner: `web-client` feed page.
+
+## Unfollow returns non-2xx
+
+`POST /api/v1/accounts/:id/unfollow` answers non-success for Ada and the
+admin, so the follow edge cannot be removed through the API and the
+unfollow-visibility row has no state to arrange. Owner: `server` accounts
+API.

@@ -19,6 +19,12 @@ export async function prepareVisualPage(page, scope) {
     )
     .toBe(true);
   await page.evaluate(() => document.fonts.ready);
+  // Relative ages sit at the end of the card header. Their text width changes
+  // when a status crosses 9m→10m, which resizes the mask box and moves pixels
+  // even though the timestamp is masked; a fixed box keeps that edge still.
+  await page.addStyleTag({
+    content: 'header a[href*="/status/"] { display: inline-block; width: 4ch; text-align: right; }',
+  });
   await expect
     .poll(
       () =>

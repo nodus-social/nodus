@@ -14,10 +14,13 @@ import { authHeaders, lookupAccount } from '../helpers/api.mjs';
 import { navigate } from '../helpers/navigation.mjs';
 import { API_BASE, signIn } from '../helpers/session.mjs';
 
-// FIXME(seed): Ada's Home renders neither POSTS.graceFirst nor POSTS.adminFirst at
-// this build, and POST /api/v1/accounts/:id/unfollow returns non-2xx, so the
-// follow graph fixtures.mjs assumes is not what the stacked instance serves.
-test.fixme('home, local and federated show the seeded graph', async ({ page }) => {
+// The seeded Home timeline is covered by home.spec.mjs. What this row adds is
+// the tab copy and the federated view, and those do not exist as promised: the
+// Local tab renders no caption at this build, and Federated lists local posts
+// only (integration/docs/e2e-gaps.md).
+test.fixme(
+  'the Local tab renders no caption and Federated serves local posts',
+  async ({ page }) => {
   await signIn(page, ACCOUNTS.ada);
 
   // Ada follows both seeded authors, so both posts are on Home.
@@ -38,15 +41,14 @@ test.fixme('home, local and federated show the seeded graph', async ({ page }) =
   await expect(page.getByText('Posts from this instance.')).toBeVisible();
   await expect(page.getByText(POSTS.graceFirst)).toBeVisible();
   await expect(page.getByText(POSTS.adminFirst)).toBeVisible();
-});
+  },
+);
 
-// FIXME(seed): Ada's Home renders neither POSTS.graceFirst nor POSTS.adminFirst at
-// this build, and POST /api/v1/accounts/:id/unfollow returns non-2xx, so the
-// follow graph fixtures.mjs assumes is not what the stacked instance serves.
-test.fixme('an unfollowed account stays on local and federated but leaves home', async ({
-  page,
-  browser,
-}) => {
+// POST /api/v1/accounts/:id/unfollow returns non-2xx at this build, so the
+// state this row arranges through the API never exists. Owner: API.
+test.fixme(
+  'unfollow returns non-2xx, so the edge cannot be removed through the API',
+  async ({ page, browser }) => {
   const session = await signIn(page, ACCOUNTS.ada);
   const admin = await lookupAccount(page.request, session, 'admin');
 
@@ -78,12 +80,10 @@ test.fixme('an unfollowed account stays on local and federated but leaves home',
       headers: authHeaders(session),
     });
   }
-});
+  },
+);
 
-// FIXME(seed): Ada's Home renders neither POSTS.graceFirst nor POSTS.adminFirst at
-// this build, and POST /api/v1/accounts/:id/unfollow returns non-2xx, so the
-// follow graph fixtures.mjs assumes is not what the stacked instance serves.
-test.fixme('a revisited timeline is served from the store, not fetched again', async ({
+test('a revisited timeline is served from the store, not fetched again', async ({
   page,
 }) => {
   const requests = [];

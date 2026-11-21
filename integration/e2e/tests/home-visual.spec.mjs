@@ -6,12 +6,12 @@ import { expect, test } from '@playwright/test';
 
 import { ACCOUNTS, POSTS } from '../fixtures.mjs';
 import { signIn } from '../helpers/session.mjs';
-import { volatileMasks } from '../helpers/visual.mjs';
+import { prepareVisualPage, volatileMasks } from '../helpers/visual.mjs';
 
 test('home timeline', async ({ page }) => {
   await signIn(page, ACCOUNTS.ada);
   await expect(page.getByText(POSTS.graceFirst)).toBeVisible();
-  await page.evaluate(() => document.fonts.ready);
+  await prepareVisualPage(page, page.locator('main'));
 
   await expect(page).toHaveScreenshot('home-timeline.png', {
     fullPage: true,
