@@ -2,18 +2,16 @@
 # Creates the lab's demo data through the public HTTP API, not by writing SQL:
 # the admin comes from NODUS_BOOTSTRAP_*, the two ordinary accounts are
 # registered on /auth/register, and every token is obtained with the same PKCE
-# flow the browser client uses. Rerunning is additive: posts that already exist
-# with the same text are skipped.
+# flow the browser client uses. Rerunning converges the lab to the seeded graph:
+# follows and posts that are already there are reported and left alone, and
+# statuses a previous spec run left behind are pruned (see prune-strays.sh).
 set -euo pipefail
 
 SCRIPT_DIR=$(unset CDPATH; cd -- "$(dirname -- "$0")" && pwd)
 . "$SCRIPT_DIR/common.sh"
 
 for tool in curl jq openssl; do
-	command -v "$tool" >/dev/null || {
-		printf 'seed.sh needs %s\n' "$tool" >&2
-		exit 1
-	}
+	command -v "$tool" >/dev/null || { printf 'seed.sh needs %s\n' "$tool" >&2; exit 1; }
 done
 
 ensure_env
@@ -107,10 +105,8 @@ login_token() {
 
 	local verifier challenge
 	verifier=$(openssl rand -hex 32)
-	challenge=$(printf '%s' "$verifier" |
-		openssl dgst -sha256 -binary |
-		openssl base64 -A |
-		tr '+/' '-_' | tr -d '=')
+	challenge=$(printf '%s' "$verifier" | openssl dgst -sha256 -binary |
+		openssl base64 -A | tr '+/' '-_' | tr -d '=')
 
 	local consent="$WORK/$name-consent.html" headers="$WORK/$name-consent.headers"
 	code=$(curl -sS -o "$consent" -D "$headers" -w '%{http_code}' \
@@ -161,13 +157,10 @@ api_get() {
 	curl -fsS -H "Authorization: Bearer $1" "$2"
 }
 
-account_id() {
-	api_get "$1" "$BASE/api/v1/accounts/verify_credentials" | jq -r .id
-}
+account_id() { api_get "$1" "$BASE/api/v1/accounts/verify_credentials" | jq -r .id; }
 
 post_status() {
-	local token=$1 id=$2 text=$3
-	local existing
+	local token=$1 id=$2 text=$3 existing
 	existing=$(api_get "$token" "$BASE/api/v1/accounts/$id/statuses?limit=40")
 	# `content` is HTML, so an apostrophe comes back as `&#39;`: compare the
 	# decoded text, or every seeded sentence with punctuation is posted again.
@@ -192,10 +185,18 @@ post_status() {
 	printf '  posted: %s\n' "$text" >&2
 }
 
+# The specs read ada's home timeline; ask first so a rerun adds no duplicate.
 follow() {
-	local token=$1 target=$2
+	local token=$1 target=$2 label=$3 following
+	following=$(api_get "$token" \
+		"$BASE/api/v1/accounts/relationships?id%5B%5D=$target" | jq -r '.[0].following')
+	if [ "$following" = "true" ]; then
+		printf '  already following %s\n' "$label" >&2
+		return 0
+	fi
 	curl -fsS -X POST "$BASE/api/v1/accounts/$target/follow" \
 		-H "Authorization: Bearer $token" >/dev/null
+	printf '  now following %s\n' "$label" >&2
 }
 
 # ---- seed ----------------------------------------------------------------
@@ -213,29 +214,36 @@ GRACE_ID=$(account_id "$GRACE_TOKEN")
 ADMIN_ID=$(account_id "$ADMIN_TOKEN")
 
 printf 'seeding follows ...\n'
-follow "$ADA_TOKEN" "$GRACE_ID"
-follow "$ADA_TOKEN" "$ADMIN_ID"
-follow "$GRACE_TOKEN" "$ADA_ID"
-follow "$ADMIN_TOKEN" "$ADA_ID"
-follow "$ADMIN_TOKEN" "$GRACE_ID"
+follow "$ADA_TOKEN" "$GRACE_ID" grace
+follow "$ADA_TOKEN" "$ADMIN_ID" admin
+follow "$GRACE_TOKEN" "$ADA_ID" ada
+follow "$ADMIN_TOKEN" "$ADA_ID" ada
+follow "$ADMIN_TOKEN" "$GRACE_ID" grace
 
-printf 'seeding posts ...\n'
-post_status "$ADA_TOKEN" "$ADA_ID" \
+# The fixtures the specs and the visual baselines read; prune-strays.sh keeps
+# every one of these and deletes anything else the seed accounts posted.
+SEED_POSTS=(
 	"Hello from Ada. This post comes from the integration lab."
-post_status "$ADA_TOKEN" "$ADA_ID" \
 	"Ada's second note: the home timeline should show both accounts."
-post_status "$GRACE_TOKEN" "$GRACE_ID" \
 	"Grace was here. This is real data served by the lab API."
-post_status "$GRACE_TOKEN" "$GRACE_ID" \
 	"Grace's follow-up: profiles and timelines have something to render."
-post_status "$ADMIN_TOKEN" "$ADMIN_ID" \
 	"Admin check-in: bootstrap login works over plain HTTP."
+)
+printf 'seeding posts ...\n'
+post_status "$ADA_TOKEN" "$ADA_ID" "${SEED_POSTS[0]}"
+post_status "$ADA_TOKEN" "$ADA_ID" "${SEED_POSTS[1]}"
+post_status "$GRACE_TOKEN" "$GRACE_ID" "${SEED_POSTS[2]}"
+post_status "$GRACE_TOKEN" "$GRACE_ID" "${SEED_POSTS[3]}"
+post_status "$ADMIN_TOKEN" "$ADMIN_ID" "${SEED_POSTS[4]}"
 
-printf '\nseeded accounts\n'
+printf 'pruning statuses a previous spec run left behind ...\n'
+"$SCRIPT_DIR/prune-strays.sh" "$BASE" \
+	"$ADA_TOKEN:$ADA_ID" "$GRACE_TOKEN:$GRACE_ID" "$ADMIN_TOKEN:$ADMIN_ID" \
+	-- "${SEED_POSTS[@]}"
+
+printf '\nseeded accounts (%s)\n' "$BASE"
 printf '  %-10s %-22s %s\n' USER EMAIL PASSWORD
 printf '  %-10s %-22s %s\n' "$ADA_USER" "$ADA_EMAIL" "$ADA_PASSWORD"
 printf '  %-10s %-22s %s\n' "$GRACE_USER" "$GRACE_EMAIL" "$GRACE_PASSWORD"
 printf '  %-10s %-22s %s\n' "$ADMIN_USER" "$ADMIN_EMAIL" "$ADMIN_PASSWORD"
-printf '\n  ada id %s, grace id %s, admin id %s\n' \
-	"$ADA_ID" "$GRACE_ID" "$ADMIN_ID"
-printf '  open http://localhost:%s and sign in with an account above\n' "$port"
+printf '\n  ada %s, grace %s, admin %s\n' "$ADA_ID" "$GRACE_ID" "$ADMIN_ID"

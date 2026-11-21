@@ -48,13 +48,13 @@ export async function favouriteStatus(request, session, id) {
 }
 
 export async function unfavouriteStatus(request, session, id) {
-  const response = await request.post(
-    `${API_BASE}/api/v1/statuses/${id}/unfavourite`,
+  const response = await request.delete(
+    `${API_BASE}/api/v1/statuses/${id}/favourite`,
     { headers: authHeaders(session) },
   );
   if (response.status() !== 200 && response.status() !== 404) {
     throw new Error(
-      `POST /api/v1/statuses/${id}/unfavourite failed with HTTP ${response.status()}`,
+      `DELETE /api/v1/statuses/${id}/favourite failed with HTTP ${response.status()}`,
     );
   }
 }
