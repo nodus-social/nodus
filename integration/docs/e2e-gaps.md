@@ -133,15 +133,15 @@ Closed by giving both routes their own arm in `app.rs`; covered by
 and the switch back`), which is red at the previous build on the tab it asks
 for after Local and green with the arm.
 
-At the pinned build the arm is not there yet: superproject `28aacc5` pins
-`web` `ff8afbb`, whose `crates/web-client/src/app.rs` has no `Route::Local` or
-`Route::Federated` arm, and `e01e34d` (the commit that adds them) is unpushed on
-the web submodule's local `main`. Rebuilt from the pins and run with
-`integration/scripts/e2e.sh --retries=0`, the row fails on all three devices:
-`/home/local` paints the heading, the caption and the posts, and no composer or
-tab strip, so `getByRole('tab', { name: 'Home' })` never resolves. The row needs
-a superproject `web` gitlink bump to `e01e34d` (pushed first) and no spec
-change. Owner: `web` client router; the pin lives in the superproject.
+This was red at `28aacc5`, which pinned `web` `ff8afbb` (no `Route::Local` or
+`Route::Federated` arm): `/home/local` painted the heading, the caption and the
+posts, and no composer or tab strip, so `getByRole('tab', { name: 'Home' })`
+never resolved on all three devices. Superproject `db76b66` bumps the `web`
+gitlink to `e01e34d` (it contains `b73c2b1`, the arm), and the same rebuilt pin
+run with `integration/scripts/e2e.sh --retries=0` is green: `timelines.spec.mjs:24`
+passes on desktop, tablet and phone, and the suite reports `79 passed`,
+`23 skipped`. No spec change was needed. Owner: `web` client router; the pin
+lives in the superproject.
 
 ## Closed: `POST /api/v1/accounts/{id}/unfollow` answered 404
 
