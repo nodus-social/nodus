@@ -26,11 +26,21 @@ export async function prepareVisualPage(page, scope) {
     content: 'header a[href*="/status/"] { display: inline-block; width: 4ch; text-align: right; }',
   });
   // Playwright clips an element screenshot to the layout box rounded to device
-  // pixels, so an element whose top lands on a half pixel is captured one pixel
-  // taller from one page position than from the next: the same card measured
-  // 179px tall when the timeline above it held four rows and 178px when a peer
-  // post made that five. Put the scope on a whole-pixel scroll offset so where
-  // the page happens to be scrolled cannot reach the pixels.
+  // pixels at both edges, so a fractional box is captured one row taller from
+  // one page position than from the next: a card lays out 177.75px tall, and the
+  // same card measured 179px tall when the timeline above it held four rows and
+  // 178px when a peer post made that five. Snap every card to a whole-pixel
+  // height first, so the fractional part stops accumulating down the feed and
+  // each card lands on an integer page offset no matter how many rows sit above
+  // it; a card gains or loses a quarter pixel at its bottom edge, which does not
+  // move its content. Then put the scope on a whole-pixel scroll offset so where
+  // the page happens to be scrolled cannot reach the pixels either.
+  await page.evaluate(() => {
+    for (const card of document.querySelectorAll('li.card')) {
+      const { height } = card.getBoundingClientRect();
+      if (height > 0) card.style.height = `${Math.round(height)}px`;
+    }
+  });
   await scope.evaluate((element) => {
     const top = element.getBoundingClientRect().top + window.scrollY;
     window.scrollTo(0, Math.round(top));
@@ -41,6 +51,14 @@ export async function prepareVisualPage(page, scope) {
       timeout: 5_000,
     })
     .toBe(true);
+  // Snapping the cards does not help if the list itself starts on a fraction —
+  // the scope's own edges are what the clip box rounds — so give the scope back
+  // the fraction it inherited from whatever sits above it.
+  await scope.evaluate((element) => {
+    const { top } = element.getBoundingClientRect();
+    const margin = Number.parseFloat(getComputedStyle(element).marginTop) || 0;
+    element.style.marginTop = `${margin - (top - Math.round(top))}px`;
+  });
   await expect
     .poll(
       () =>

@@ -423,7 +423,13 @@ in account rows and Redis): the four peer volumes were removed and
 backend code changed for this run.
 
 `integration/scripts/peers.sh follow` exits 0; the results below are the literal
-output of that run plus the follow-up queries.
+output of that run plus the follow-up queries. It removes the two proof statuses
+it posted as ada once the checks are recorded (by author and exact text, the way
+`prune-strays.sh` removes a failed spec's leftovers), so the timeline a follow
+leaves behind is the seeded one and a second run proves the same thing as the
+first. Nodus records a delete as `deleted_at`, so the row files under it remain —
+the same tombstone `prune-strays.sh` leaves — but `deleted_at is null` counts no
+proof status and no timeline renders one.
 
 These proofs need the peer stack. A run that starts only the origin —
 `scripts/up.sh` then `scripts/seed.sh`, which is CI's default push/PR path — has

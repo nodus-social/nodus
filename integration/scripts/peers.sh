@@ -606,6 +606,41 @@ check_peer_post_in_web_shell() {
     nodus_api GET "/api/v1/accounts/$account_id/statuses?limit=10" "$token"
 }
 
+# The two proofs post as ada, and admin follows ada, so a proof left behind is a
+# new row in the home-timeline screenshot of every later suite run: the page
+# measured 1860px tall on a freshly seeded origin and 2603px after a few follow
+# runs. Remove exactly what this script wrote — ada's own statuses whose text is
+# one of the proof sentences — the way prune-strays.sh removes a failed spec's
+# leftovers. Only ada's account is listed, with ada's own token, and only these
+# two texts are candidates; a status either peer authored is never listed.
+PROOF_STATUSES=(
+    'hello from nodus, outbound delivery check'
+    'hello from nodus, misskey reaction check'
+)
+
+remove_proof_statuses() {
+    local token account_id statuses text id code
+    token=$(nodus_token)
+    [ -n "$token" ] || return 0
+    account_id=$(nodus_api GET /api/v1/accounts/verify_credentials "$token" |
+        json_body | jq -r '.id // empty')
+    [ -n "$account_id" ] || return 0
+    statuses=$(nodus_api GET \
+        "/api/v1/accounts/$account_id/statuses?limit=40" "$token" | json_body)
+    for text in "${PROOF_STATUSES[@]}"; do
+        for id in $(printf '%s' "$statuses" |
+            jq -r --arg text "$text" '.[] | select(.content | contains($text)) | .id'); do
+            code=$(nodus_api DELETE "/api/v1/statuses/$id" "$token" | json_code)
+            case "$code" in
+            200 | 404) printf -- '-- removed proof status %s\n' "$id" ;;
+            *) printf 'warning: deleting proof status %s returned HTTP %s\n' \
+                "$id" "$code" >&2 ;;
+            esac
+        done
+    done
+    printf -- '-- no proof status left on the nodus timeline\n'
+}
+
 report_failure_logs() {
     printf '\n=== nodus-api log tail (signature and discovery failures) ===\n'
     compose logs --no-color --tail=25 nodus-api
@@ -689,6 +724,7 @@ cmd_follow() {
     check_mastodon_to_nodus || failed=1
     check_misskey_to_nodus || failed=1
     check_peer_post_in_web_shell || failed=1
+    remove_proof_statuses
     report_failure_logs
     return "$failed"
 }
