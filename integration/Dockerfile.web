@@ -94,7 +94,11 @@ COPY --from=bundle /src/web/dist/ /srv/nodus/
 # of the build context, and compose bind-mounts integration/Caddyfile into the caddy
 # service instead. That also makes a route edit a restart rather than a rebuild.
 
-RUN useradd --system --uid 10002 --create-home --home-dir /var/lib/nodus nodus \
+# Same uid as Dockerfile.server's nodus: the `nodus-data` volume is shared, and
+# whichever image first mounts it stamps its ownership on the volume root. With
+# differing uids the roles could not write each other's tree (the API's media
+# directory, the shell's sessions.json) whenever the start order changed.
+RUN useradd --system --uid 10001 --create-home --home-dir /var/lib/nodus nodus \
  && mkdir -p /var/lib/nodus/caddy \
  && chown -R nodus:nodus /var/lib/nodus /srv/nodus
 
