@@ -1,4 +1,8 @@
-# Misskey 2024.11.0 configuration for the lab.
+# Misskey 2026.11.0 configuration for the lab.
+#
+# The image is misskey/misskey:2026.11.0, pinned by tag and by digest in
+# compose.peers.yml (a tag alone can be repointed upstream):
+# sha256:308f8f1980ae2e7d43209923190dcbbdbece428a0fb1c22060d3576d7bcd2d69
 #
 # Mounted at /misskey/.config (the image's default config directory) read
 # only. Credentials come from the environment (DATABASE_*), not from this
@@ -13,7 +17,8 @@
 url: https://misskey.test/
 port: 18082
 
-# Stock PostgreSQL 15+: Misskey 2024.11 does not use pg_roaringbitmap.
+# Stock PostgreSQL 15+: Misskey dropped pg_roaringbitmap in 2024.11 and
+# 2026.11 still does not use it.
 db:
   host: misskey-db
   port: 5432
@@ -31,9 +36,8 @@ setupPassword: misskey-lab-setup
 # written corrupts ordering.
 id: aidx
 
-# Off: checking the signer's inbox reachability fails for private peers and is
-# not needed on a trusted lab network.
-signToActivityPubGet: false
+# 2026.11 removed `signToActivityPubGet`; the key is no longer read (unknown
+# keys are ignored at boot), so it is gone rather than left as a stale knob.
 
 # The lab peer answers over https with an internal CA on `.test`; HSTS buys
 # nothing there and would poison the host browser's view of the name.

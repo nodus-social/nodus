@@ -325,7 +325,7 @@ Notable knobs (all documented inline in `.env.example`):
 ## Federation peers
 
 `compose.peers.yml` adds two real fediverse servers to the lab — Mastodon
-4.3.6 on `http://127.0.0.1:18081` and Misskey 2024.11 on
+4.6.3 on `http://127.0.0.1:18081` and Misskey 2026.11.0 on
 `http://127.0.0.1:18082` — each with its own database and cache. It joins the
 existing `nodus-lab` network (declared `external: true`), keeps container names
 prefixed `nodus-lab-`, and relies on the origin being reachable as

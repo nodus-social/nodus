@@ -12,10 +12,11 @@
 #
 # Peers are real applications with their own databases:
 #
-#   mastodon  ghcr.io/mastodon/mastodon:v4.3.6
-#             + postgres:16-alpine + redis:7-alpine
-#   misskey   misskey/misskey:2024.11.0
-#             + postgres:16-alpine + redis:7-alpine
+#   mastodon  ghcr.io/mastodon/mastodon:v4.6.3 (+ postgres, redis)
+#   misskey   misskey/misskey:2026.11.0        (+ postgres, redis)
+#
+# Both peers run stock postgres:16-alpine and redis:7-alpine, and both primary
+# images are pinned by tag and by digest under x-peer-images below.
 #
 # Neither peer reuses the lab's Postgres or Valkey: Mastodon owns its schema
 # and its extension set, and a peer reset must not be able to damage the
@@ -39,9 +40,9 @@ networks:
 # The references are longer than 80 columns and cannot be split.
 x-peer-images:
   # yamllint disable-line rule:line-length
-  mastodon: &image-mastodon ghcr.io/mastodon/mastodon:v4.3.6@sha256:0d9da387961ed09e15033eb2bd6d6b8a3ca2ff8a3eac0c7d9e20ab5fbcedaf38
+  mastodon: &image-mastodon ghcr.io/mastodon/mastodon:v4.6.3@sha256:1499ae16d19c1391df30ee9a7540d8989ee9119370bd88427da938a7a9b636f9
   # yamllint disable-line rule:line-length
-  misskey: &image-misskey misskey/misskey:2024.11.0@sha256:f4a167a920444c0e030833f352418f2101307531c95a08120b0c911e992cea27
+  misskey: &image-misskey misskey/misskey:2026.11.0@sha256:308f8f1980ae2e7d43209923190dcbbdbece428a0fb1c22060d3576d7bcd2d69
   # yamllint disable-line rule:line-length
   postgres: &image-postgres postgres:16-alpine@sha256:1d5b02d3a9941fbd52437db4107f8c52d6297dac553ca1e5c299ebb3756b4857
   # yamllint disable-line rule:line-length
@@ -71,9 +72,13 @@ x-mastodon-environment: &mastodon-environment
   DB_NAME: mastodon
   DB_USER: mastodon
   DB_PASS: ${MASTODON_DB_PASSWORD:?run peers.sh up}
-  # Rails cannot boot without these once any encrypted attribute exists.
+  # Rails cannot boot without these once any encrypted attribute exists. The
+  # ${VAR:?message} defaults cannot be wrapped without changing the value.
+  # yamllint disable-line rule:line-length
   ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY: ${MASTODON_ACTIVE_RECORD_PRIMARY_KEY:?run peers.sh up}
+  # yamllint disable-line rule:line-length
   ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY: ${MASTODON_ACTIVE_RECORD_DETERMINISTIC_KEY:?run peers.sh up}
+  # yamllint disable-line rule:line-length
   ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT: ${MASTODON_ACTIVE_RECORD_KEY_DERIVATION_SALT:?run peers.sh up}
   REDIS_URL: redis://mastodon-redis:6379/0
   # The web process cannot reach a streaming server in this lab; the API and
@@ -129,6 +134,7 @@ services:
     command:
       - sh
       - -c
+      # yamllint disable-line rule:line-length
       - RAILS_ENV=production SECRET_KEY_BASE_DUMMY=1 bundle exec rails db:prepare
     environment: *mastodon-environment
     depends_on:
@@ -143,6 +149,7 @@ services:
     restart: unless-stopped
     # tini stays PID 1; the wrapper it launches builds the trust bundle and then
     # execs the command below.
+    # yamllint disable-line rule:line-length
     entrypoint: ["/usr/bin/tini", "--", "/opt/mastodon/bin/lab-ca-entrypoint.sh"]
     command:
       - bundle
@@ -164,10 +171,11 @@ services:
       - 0.0.0.0
     environment:
       <<: *mastodon-environment
-      # Ruby reads SSL_CERT_FILE instead of the system bundle, so ca-entrypoint.sh writes
-      # a copy of the bundle with the lab root appended and this names it. It is set here
-      # and not in the wrapper because `docker exec` inherits this environment, not a
-      # shell's exports — the container checks in docs/peers.md depend on that.
+      # Ruby reads SSL_CERT_FILE instead of the system bundle, so
+      # ca-entrypoint.sh writes a copy of the bundle with the lab root appended
+      # and this names it. It is set here and not in the wrapper because
+      # `docker exec` inherits this environment, not a shell's exports — the
+      # container checks in docs/peers.md depend on that.
       SSL_CERT_FILE: /tmp/nodus-lab-ca-bundle.crt
     # No `mastodon.test` alias: the name belongs to Caddy on :443 (the
     # Caddyfile's peer site blocks), and a second container answering to it
@@ -188,10 +196,12 @@ services:
       # The development bundle is absent from the image, but development mode
       # is required for plain HTTP on the docker network; this shim supplies
       # the one gem constant the boot path reads. See the file header.
+      # yamllint disable-line rule:line-length
       - ./peers/mastodon/letter_opener_web_shim.rb:/opt/mastodon/config/initializers/0_letter_opener_web_shim.rb:ro
       # Caddy's internal root, and the wrapper that folds it into a copy of the
       # image's system bundle before Rails starts. See "TLS in the lab".
       - ./state/ca/nodus-lab-ca.crt:/certs/nodus-lab-ca.crt:ro
+      # yamllint disable-line rule:line-length
       - ./peers/mastodon/ca-entrypoint.sh:/opt/mastodon/bin/lab-ca-entrypoint.sh:ro
     depends_on:
       mastodon-setup:
@@ -215,16 +225,19 @@ services:
     container_name: nodus-lab-mastodon-sidekiq
     restart: unless-stopped
     command: ["bundle", "exec", "sidekiq"]
-    # Delivery is the process that dials a peer's https origin, so Sidekiq needs the
-    # same trust as the web process.
+    # Delivery is the process that dials a peer's https origin, so Sidekiq needs
+    # the same trust as the web process.
+    # yamllint disable-line rule:line-length
     entrypoint: ["/usr/bin/tini", "--", "/opt/mastodon/bin/lab-ca-entrypoint.sh"]
     environment:
       <<: *mastodon-environment
       SSL_CERT_FILE: /tmp/nodus-lab-ca-bundle.crt
     volumes:
       - mastodon-system:/mastodon/public/system
+      # yamllint disable-line rule:line-length
       - ./peers/mastodon/letter_opener_web_shim.rb:/opt/mastodon/config/initializers/0_letter_opener_web_shim.rb:ro
       - ./state/ca/nodus-lab-ca.crt:/certs/nodus-lab-ca.crt:ro
+      # yamllint disable-line rule:line-length
       - ./peers/mastodon/ca-entrypoint.sh:/opt/mastodon/bin/lab-ca-entrypoint.sh:ro
     depends_on:
       mastodon-setup:
@@ -246,8 +259,9 @@ services:
     container_name: nodus-lab-misskey-db
     restart: unless-stopped
     shm_size: 256mb
-    # Misskey 2024.11 needs stock PostgreSQL 15+; pg_roaringbitmap was dropped
-    # from the schema, so no extension image is required.
+    # Misskey keeps the schema on stock PostgreSQL 15+; pg_roaringbitmap was
+    # dropped in 2024.11 and 2026.11 does not use it either, so no extension
+    # image is required.
     environment:
       POSTGRES_USER: misskey
       POSTGRES_PASSWORD: ${MISSKEY_DB_PASSWORD:?run peers.sh up}
@@ -288,20 +302,14 @@ services:
     image: *image-misskey
     container_name: nodus-lab-misskey
     restart: unless-stopped
-    # The image's default command is `pnpm run migrateandstart`, but `pnpm`
-    # here is a corepack shim, and this image's corepack (0.29.4, node 22.11)
-    # cannot verify the npm registry's rotated signing keys at boot:
-    #   Error: Cannot find matching keyid: ...
-    # so the entrypoint dies before Misskey starts. Bypass corepack and run the
-    # two commands the script expands to, with the tools already in the image:
-    # `typeorm migration:run` in packages/backend, then the compiled entrypoint.
-    command:
-      - /bin/sh
-      - -c
-      - >-
-        cd /misskey/packages/backend &&
-        node ./node_modules/typeorm/cli.js migration:run -d ormconfig.js &&
-        exec node ./built/boot/entry.js
+    # 2026.11's own command is `node scripts/start.mjs --migrate`: it resolves
+    # typeorm from packages/backend, runs `migration:run`, checks the database
+    # connection, then execs built/entry.js. That replaces the 2024.11-era
+    # workaround (corepack could not verify the registry's rotated signing keys,
+    # so `pnpm run migrateandstart` died at boot): no pnpm shim is on this path.
+    # Kept explicit rather than inherited so the migration step stays visible
+    # next to the restart policy.
+    command: ["node", "scripts/start.mjs", "--migrate"]
     environment:
       # Read by config.ts as the db name/user/pass when default.yml omits them.
       DATABASE_DB: misskey
@@ -309,6 +317,7 @@ services:
       DATABASE_PASSWORD: ${MISSKEY_DB_PASSWORD:?run peers.sh up}
       # `checkHttps` (packages/backend/src/misc/check-https.ts) refuses any
       # ActivityPub id that is not https unless NODE_ENV is not "production":
+      # yamllint disable-line rule:line-length
       #   return url.startsWith('https://') || (url.startsWith('http://') && process.env.NODE_ENV !== 'production')
       # Its `url` is https now, so this is no longer load-bearing for the lab's
       # ids; it stays development so a peer keeps the same diagnostics as the

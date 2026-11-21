@@ -1,0 +1,26 @@
+# Lint policy for the lab's compose files.
+#
+# 120 columns rather than the usual 80: the files carry values that cannot be
+# wrapped without changing what compose reads — volume mounts such as
+# "./peers/mastodon/letter_opener_web_shim.rb:/opt/mastodon/config/…:ro",
+# image references pinned by digest, and ${VAR:?message} defaults whose message
+# is the operator's instruction. Splitting any of them silently changes the
+# value, so the limit accommodates them and everything else is kept short.
+#
+# allow-non-breakable-words is on for the same reason: a single 60-character
+# path is a word, not a long line.
+extends: default
+
+rules:
+  line-length:
+    max: 120
+    allow-non-breakable-words: true
+    allow-non-breakable-inline-mappings: true
+  # Compose files legitimately start documents with `---`-less keys and
+  # comments at column 0; truthy and indentation stay at their defaults.
+  document-start: disable
+  comments-indentation: disable
+  braces:
+    max-spaces-inside: 1
+  comments:
+    min-spaces-from-content: 1

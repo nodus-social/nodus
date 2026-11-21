@@ -5,8 +5,18 @@ federation can be exercised against software that is not ours:
 
 | service    | image                              | host (UI, inspect-only)  | canonical origin (peers)   |
 | ---------- | ---------------------------------- | ------------------------ | -------------------------- |
-| `mastodon` | `ghcr.io/mastodon/mastodon:v4.3.6` | `http://127.0.0.1:18081` | `https://mastodon.test`   |
-| `misskey`  | `misskey/misskey:2024.11.0`        | `http://127.0.0.1:18082` | `https://misskey.test`    |
+| `mastodon` | `ghcr.io/mastodon/mastodon:v4.6.3` | `http://127.0.0.1:18081` | `https://mastodon.test`   |
+| `misskey`  | `misskey/misskey:2026.11.0`        | `http://127.0.0.1:18082` | `https://misskey.test`    |
+
+Both are pinned by digest as well as tag, because a tag alone can be repointed
+upstream. The digests are amd64 manifest digests:
+
+```text
+mastodon  ghcr.io/mastodon/mastodon:v4.6.3
+          sha256:1499ae16d19c1391df30ee9a7540d8989ee9119370bd88427da938a7a9b636f9
+misskey   misskey/misskey:2026.11.0
+          sha256:308f8f1980ae2e7d43209923190dcbbdbece428a0fb1c22060d3576d7bcd2d69
+```
 
 Every peer speaks to the origin, and is spoken to, at the address it advertises:
 `https://<peer domain>` on **443**, terminated by the lab Caddy. The published
@@ -34,6 +44,31 @@ integration/scripts/peers.sh down    # remove peer containers, keep peer volumes
 three `ACTIVE_RECORD_ENCRYPTION_*` keys Rails needs before it will boot) and
 never overwrites one that is already there, so `down` + `up` keeps the seeded
 accounts and their tokens valid.
+
+### Upgrading a peer version
+
+Bumping a pin does not need a volume drop: both peer stacks migrate their own
+schema on start. Mastodon's one-shot `mastodon-setup` service runs
+`bundle exec rails db:prepare` on every `up`, so `db/schema.rb` changes apply
+before web and sidekiq start; Misskey's image command runs its own typeorm
+`migration:run` (`node scripts/start.mjs --migrate`) before the backend boots.
+
+What is **not** verified is an in-place upgrade of existing peer volumes: the
+4.3.6→4.6.3 and 2024.11→2026.11 step was exercised from empty peer volumes (a
+full `scripts/reset.sh` had run first). If an in-place upgrade misbehaves, the
+fallback is `scripts/reset.sh` — or `docker volume rm` of the four peer volumes
+— then `peers.sh up && peers.sh seed && peers.sh follow`.
+
+Two behaviour changes in those releases are visible to the lab:
+
+- Mastodon 4.6 removed the OAuth password grant (Doorkeeper allows only
+  `authorization_code client_credentials`). `peers.sh seed` therefore mints
+  alice's token directly through `Doorkeeper::AccessToken` in a `rails runner`;
+  her password is only a UI login now.
+- Misskey 2026.11 creates a new instance with `federation: none`, so a fresh
+  peer database refuses `ap/show` and remote follows with
+  `FEDERATION_NOT_ALLOWED`. `peers.sh seed` opens it with
+  `admin/update-meta {"federation":"all"}`.
 
 ## Topology and identity
 
@@ -76,9 +111,9 @@ next to `https` ids and a peer that follows the aliases dead-ends on port 80.
   live updates do.
 - **Private networks on the Misskey side.** `allowedPrivateNetworks` lists the
   docker bridge ranges, otherwise Misskey refuses to dereference actors and
-  notes that live on private addresses. `disableHsts` and
-  `signToActivityPubGet: false` do the same job for HSTS and inbox reachability
-  probing.
+  notes that live on private addresses. `disableHsts` does the same job for
+  HSTS; 2026.11 dropped `signToActivityPubGet`, which used to cover the inbox
+  reachability probe.
 - **Address guard, not scheme guard.** `compose.peers.yml` sets
   `NODUS_ALLOW_PRIVATE_HOSTS` on `nodus-api`, which lifts the private-address
   half of the resolver guard for the peer names. `NODUS_ALLOW_INSECURE_PEERS` is

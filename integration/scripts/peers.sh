@@ -201,29 +201,24 @@ mastodon_account_exists() {
 }
 
 mastodon_token() { # -> token on stdout, diagnostics on stderr
-    local app client_id client_secret response
-    app=$(curl -sS -X POST "$MASTODON_URL/api/v1/apps" \
-        -d client_name=nodus-lab-peers \
-        -d redirect_uris=urn:ietf:wg:oauth:2.0:oob \
-        -d 'scopes=read write follow')
-    client_id=$(printf '%s' "$app" | jq -r .client_id)
-    client_secret=$(printf '%s' "$app" | jq -r .client_secret)
-    [ "$client_id" != null ] || {
-        printf 'mastodon app registration failed: %s\n' "$app" >&2
-        return 1
-    }
-    # Doorkeeper's resource_owner_from_credentials looks the resource owner up
-    # with `User.find_by(email: params[:username])`
-    # (config/initializers/doorkeeper.rb), so the password grant takes the
-    # address, not the bare local username.
-    response=$(curl -sS -X POST "$MASTODON_URL/oauth/token" \
-        -d grant_type=password \
-        -d "username=$MASTODON_ACCOUNT@mastodon.test" \
-        -d "password=$(mastodon_password)" \
-        -d "client_id=$client_id" \
-        -d "client_secret=$client_secret" \
-        -d 'scope=read write follow')
-    printf '%s' "$response" | jq -r '.access_token // empty'
+    # Mastodon 4.6 removed the OAuth password grant: its Doorkeeper initializer
+    # now allows only `authorization_code client_credentials`
+    # (config/initializers/doorkeeper.rb), and a password request answers
+    # `unsupported_grant_type` (HTTP 400). There is no headless browser in this
+    # lab, so the token is issued the way Mastodon's own tests do: an
+    # application plus an access token for alice, created through the model.
+    peer_compose exec -T mastodon bundle exec rails runner "
+        app = Doorkeeper::Application.find_or_create_by!(name: 'nodus-lab-peers') do |a|
+          a.redirect_uri = 'urn:ietf:wg:oauth:2.0:oob'
+          a.scopes = 'read write follow'
+        end
+        user = Account.find_local('$MASTODON_ACCOUNT').user
+        token = Doorkeeper::AccessToken.create!(
+          application: app, resource_owner_id: user.id,
+          scopes: 'read write follow', expires_in: nil
+        )
+        puts token.token
+    " 2>/dev/null | tail -n 1
 }
 
 seed_mastodon() {
@@ -237,11 +232,10 @@ seed_mastodon() {
             --confirmed \
             --approve
     fi
-    # `tootctl accounts modify` in 4.3 accepts only USERNAME plus role/confirm
-    # flags; there is no --password. Set the password through the model so the
-    # value stored in .env is the one the API password grant uses. Approval is
-    # set here too because an unapproved user cannot complete the grant
-    # (Doorkeeper answers `invalid_grant`) even when it is confirmed.
+    # `tootctl accounts modify` accepts only USERNAME plus role/confirm flags;
+    # there is no --password. Set the password through the model so the value
+    # stored in .env is the one the UI login uses. The password is no longer an
+    # OAuth credential in 4.6 (the grant is gone, see mastodon_token).
     peer_compose exec -T mastodon bundle exec rails runner \
         "Account.find_local('$MASTODON_ACCOUNT').user.update!(password: '$(mastodon_password)', approved: true)" \
         >/dev/null
@@ -306,6 +300,16 @@ seed_misskey() {
         printf '%s\n' "  Run peers.sh down && peers.sh up && peers.sh seed to rebuild."
         return 1
     }
+
+    # Misskey 2026.11 creates a new instance with `federation: none`; 2024.11
+    # defaulted to `all`. Left closed, ap/show answers FEDERATION_NOT_ALLOWED
+    # and nothing from nodus.test resolves, so the lab opens it here. The
+    # setting lives in the `meta` row, not in default.yml, hence the API call.
+    response=$(misskey_api admin/meta "$admin_token" '{}')
+    if [ "$(printf '%s' "$response" | json_body | jq -r '.federation')" != all ]; then
+        misskey_api admin/update-meta "$admin_token" '{"federation":"all"}' >/dev/null
+        printf '  federation opened (2026.11 defaults new instances to none)\n'
+    fi
 
     existing=$(misskey_api users/show "" \
         "$(jq -nc --arg u "$MISSKEY_ACCOUNT" '{username: $u}')")
