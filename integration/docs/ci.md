@@ -33,10 +33,24 @@ integration/scripts/ci.sh down                 # stop Docker-in-Docker
   means the container's cargo compiles into the same `target/` a local
   `cargo test` uses, so the two share a compile instead of each paying for one.
   The price is that the container runs as root and leaves root-owned files in
-  `target/`; run `cargo test` as root in the container or `sudo chown -R` the
-  touched crates afterwards if a later host-side build complains;
+  `target/`; `ci.sh` reclaims them at the end of every run instead of leaving it to
+  `sudo chown -R`;
 - `DOCKER_HOST=tcp://127.0.0.1:2375` — so the `lab` job's `docker build` and
   `docker compose` use the dind daemon instead of the host's socket;
+- the dind container itself is started with `-v "$REPO_DIR:$REPO_DIR"` — the
+  repository at its own absolute path, writable. `--bind` gives the *client*
+  the checkout at that path, but the *daemon* is a separate filesystem, so a
+  compose bind source like `./Caddyfile` is passed to dind as
+  `/var/home/lux/Projects/MastodonReccom/integration/Caddyfile`, which does not
+  exist there. The first `docker compose up` of a service with a bind mount
+  therefore failed in runc with
+  `error mounting "/var/home/lux/Projects/MastodonReccom/integration/Caddyfile" to rootfs at "/etc/caddy/Caddyfile": not a directory`
+  (the daemon had auto-created an empty directory for the unseen path). The
+  mount is not `:ro`: `integration/scripts/e2e.sh` runs the Playwright image
+  with `-v "$REPO_DIR:/work"` against this daemon, and the suite writes
+  `test-results/` and `playwright-report/` into the tree through it;
+  `ci.sh up` replaces a running dind that lacks the mount, so an old container
+  does not keep failing;
 - `--network host` for the `lab` job (and a whole-workflow run), because its
   published ports (18080, 18443) and the nested e2e container need the host
   network. Jobs that only need a service container (`rust-tests` and its
@@ -45,6 +59,21 @@ integration/scripts/ci.sh down                 # stop Docker-in-Docker
 
 Act is installed into `~/.local/bin` on first use (`ACT_VERSION`, default
 0.2.98). Logs land in `integration/.act/` (git-ignored).
+
+`act` runs the job container as root, and `--bind` (plus dind's copy of the
+same path) means its writes land in this checkout owned by root —
+`nodus-backend/target`, `web/target`, `integration/state`, the e2e
+`test-results`/`playwright-report` directories, and `web/dist`. A host-side
+`cargo test` during the first local runs then failed with `Permission denied`,
+which is why `ci.sh` ends every `run` with a reclaim:
+
+```sh
+docker run --rm -v "<path>:/t" alpine:latest chown -R "$(id -u):$(id -g)" /t
+```
+
+for each existing path in `RECLAIM_PATHS`, followed by one line naming what was
+handed back. The named volumes (`nodus-act-dind-data`, e2e `node_modules`) are
+out of scope: they never appear in the checkout.
 
 The dind daemon's `/var/lib/docker` is the named volume
 `nodus-act-dind-data`, and `ci.sh down` removes the container without `-v`, so
@@ -120,6 +149,15 @@ pulls and a full cargo compile.
 - **Disk and CPU** are this host's, not the runner's. The `lab` job's free-disk
   step deletes paths that may not exist; that is harmless but does not recreate
   GitHub's disk budget.
+- **Artifacts cannot be uploaded.** `actions/upload-artifact@v4` needs the
+  `ACTIONS_RUNTIME_TOKEN` and the artifact service that only GitHub runs; under
+  act its step fails with
+  `❗ ::error::Unable to get the ACTIONS_RUNTIME_TOKEN env variable` — visible in
+  `integration/.act/run-lab.log` at the end of every `lab` run. It runs
+  `if: always()`, so it can flip an otherwise green job red locally. That is a
+  limitation of act, not of the workflow: do not silence the step to make a
+  local run green, and read the reports from the working tree instead
+  (`web/e2e/playwright-report`, `integration/e2e/playwright-report`).
 - **Secrets and variables** are whatever is exported in the shell. The workflow
   currently reads none, but `ci.sh` forwards `LAB_HTTP_PORT` and
   `NODUS_HTTPS_PORT` only.

@@ -102,22 +102,47 @@ wait_for_dind() {
     die "dind did not become reachable at $DIND_HOST"
 }
 
+# A dind container started before the workspace mount was added would quietly
+# keep failing every compose `up`, so `cmd_up` replaces it rather than trusting
+# the name.
+dind_has_workspace() {
+    docker inspect --format '{{range .Mounts}}{{println .Source}}{{end}}' \
+        "$DIND_CONTAINER" 2>/dev/null | grep -qx "$REPO_DIR"
+}
+
 cmd_up() {
     require_docker
     mkdir -p "$LOG_DIR"
-    if dind_running; then
+    if dind_running && dind_has_workspace; then
         wait_for_dind
         printf 'dind already running: %s\n' "$DIND_HOST"
         return 0
+    fi
+    if dind_running; then
+        printf 'recreating %s: %s is not mounted in the daemon\n' \
+            "$DIND_CONTAINER" "$REPO_DIR" >&2
     fi
     docker rm -f "$DIND_CONTAINER" >/dev/null 2>&1 || true
     # TLS is off on purpose: the image then serves the API on 0.0.0.0:2375, which
     # --network host makes reachable as 127.0.0.1:2375 for the duration of a local
     # run. Do not add --host here; dockerd-entrypoint.sh already passes one.
+    # The compose client runs inside the act job container, where `--bind` puts
+    # the checkout at $REPO_DIR; the daemon is dind, whose filesystem has no
+    # /var/home/lux/... unless it is given it. Without this mount, the first
+    # compose service with a relative bind source died in runc with
+    #   error mounting "/var/home/lux/Projects/MastodonReccom/integration/Caddyfile"
+    #   to rootfs at "/etc/caddy/Caddyfile": not a directory
+    # because the daemon resolved a path it could not see. So mount the
+    # repository at its own absolute path, writable: compose bind sources
+    # (integration/state/ca, integration/initdb, integration/Caddyfile) are only
+    # read by the containers, but e2e.sh runs the Playwright image with
+    # `-v "$REPO_DIR:/work"` against this daemon and the suite writes
+    # test-results/ and playwright-report/ back into the tree.
     docker run -d --name "$DIND_CONTAINER" \
         --privileged --network host \
         -e DOCKER_TLS_CERTDIR= \
         -v "${DIND_CONTAINER}-data:/var/lib/docker" \
+        -v "${REPO_DIR}:${REPO_DIR}" \
         "$ACT_DIND_IMAGE" >/dev/null
     wait_for_dind
     printf 'dind listening on %s\n' "$DIND_HOST"
@@ -130,6 +155,40 @@ cmd_down() {
         # cold `lab` run.
         docker rm -f "$DIND_CONTAINER" >/dev/null
         printf 'stopped %s (volume %s-data kept)\n' "$DIND_CONTAINER" "$DIND_CONTAINER"
+    fi
+}
+
+# Paths the job container writes as root through `--bind`, plus the e2e output
+# directories written through the dind daemon's copy of the same path. A
+# host-side `cargo test` after an act run already failed with Permission denied
+# once in this project, so every run hands them back to the invoking user.
+RECLAIM_PATHS=(
+    nodus-backend/target
+    web/target
+    web/dist
+    integration/state
+    integration/e2e/test-results
+    integration/e2e/playwright-report
+    web/e2e/test-results
+    web/e2e/playwright-report
+)
+
+# One container per path, the pattern this repository already uses to fix
+# ownership from inside a container: the host user need not be able to chown
+# root's files itself.
+reclaim_workspace() {
+    local reclaimed=()
+    local rel path
+    for rel in "${RECLAIM_PATHS[@]}"; do
+        path="$REPO_DIR/$rel"
+        [ -e "$path" ] || continue
+        docker run --rm -v "$path:/t" alpine:latest \
+            chown -R "$(id -u):$(id -g)" /t
+        reclaimed+=("$rel")
+    done
+    if [ "${#reclaimed[@]}" -gt 0 ]; then
+        printf 'reclaimed root-owned writes as %s:%s: %s\n' \
+            "$(id -u)" "$(id -g)" "${reclaimed[*]}"
     fi
 }
 
@@ -209,6 +268,8 @@ run_act() {
     )
     local status=$?
     set -e
+    reclaim_workspace || printf 'ci.sh: reclaim failed; check ownership of %s\n' \
+        "${RECLAIM_PATHS[*]}" >&2
     [ "$status" -eq 0 ] || printf 'act exited %s; see %s\n' "$status" "$log" >&2
     return "$status"
 }
