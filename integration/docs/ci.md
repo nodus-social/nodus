@@ -88,6 +88,22 @@ pulls and a full cargo compile.
 - **Caches are not GitHub's.** `actions/cache`, `Swatinem/rust-cache` and
   `actions/setup-node` caches either miss or are per-run. Timings and cold-path
   failures differ; a cold local run is the closer analogue.
+- **A JavaScript action runs in a different place.** GitHub executes a JS
+  action on the runner host, which has node; act executes it inside the job
+  container with `docker exec node …`. The runner-image jobs (`preflight`,
+  `lab`) are fine, because `catthehacker/ubuntu:act-24.04` ships node.
+  `rust-tests` runs in `rust:1-bookworm`, which ships none, so its
+  `Swatinem/rust-cache@v2` step died with `exec: "node": executable file not
+  found in $PATH` before the first `cargo` command. That step now carries
+  `if: ${{ !env.ACT }}` — act exports `ACT=true`, GitHub leaves it unset — so
+  the dispatched run still restores and saves the cache while a local run skips
+  it. The trade-off is that the dispatched run becomes the only place the cache
+  key and the restore path are exercised, so a broken key or a broken restore
+  would not be caught locally. The same split stops the job at its later
+  `actions/setup-node@v4` step, which that image cannot run either; it is left
+  unguarded on purpose, because it installs the node and npm that the
+  `cargo check` step needs (`web-client/build.rs` panics without npm), so
+  skipping it locally would trade a clear error for a confusing one.
 - **Service containers** are act's implementation, not GitHub's; health checks
   and DNS can behave differently.
 - **The `cargo metadata --locked --offline` advisory step fails under act**,

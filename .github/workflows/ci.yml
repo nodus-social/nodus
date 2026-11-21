@@ -111,6 +111,12 @@ jobs:
           fetch-depth: 1
 
       - uses: Swatinem/rust-cache@v2
+        # act executes JavaScript actions inside the job container, not on the
+        # runner host the way GitHub does; rust:1-bookworm ships no node, so
+        # this step dies with `exec: "node": executable file not found in
+        # $PATH` before cargo is reached. act exports ACT=true, GitHub leaves
+        # it unset, so the dispatched run still restores and saves the cache.
+        if: ${{ !env.ACT }}
         with:
           workspaces: nodus-backend
           cache-on-failure: true
