@@ -9,7 +9,7 @@
 
 import { expect, test } from '@playwright/test';
 
-import { ACCOUNTS, BASE_URL, POSTS } from '../fixtures.mjs';
+import { ACCOUNTS, BROWSER_ORIGIN, POSTS } from '../fixtures.mjs';
 import { authHeaders, lookupAccount } from '../helpers/api.mjs';
 import { navigate } from '../helpers/navigation.mjs';
 import { API_BASE, signIn } from '../helpers/session.mjs';
@@ -61,7 +61,7 @@ test.fixme(
   try {
     // A fresh context has no cached timeline, so this is the server's answer
     // for Ada's follow set after the unfollow.
-    const context = await browser.newContext({ baseURL: BASE_URL });
+    const context = await browser.newContext({ baseURL: BROWSER_ORIGIN });
     const fresh = await context.newPage();
     await signIn(fresh, ACCOUNTS.ada);
 

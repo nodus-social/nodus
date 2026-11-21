@@ -53,7 +53,7 @@ the only destructive command is `compose down --volumes` behind that guard.
 
 ## The lab CA
 
-Caddy terminates TLS for `nodus`, `mastodon.test` and `misskey.test` with its own
+Caddy terminates TLS for `nodus.test`, `mastodon.test` and `misskey.test` with its own
 internal authority. The authority lives on the `nodus-data` volume, which
 `reset.sh` drops, so every reset mints a **new** root: same subject
 (`CN=Caddy Local Authority - 2026 ECC Root`), different key. The root is
@@ -81,8 +81,9 @@ this is also why a `reset.sh` right after a CA change needs the peers restarted.
 
 | what | value |
 | --- | --- |
-| origin (host) | `http://localhost:8080` — this checkout uses **18080**, see below |
-| origin (in the `nodus-lab` network) | `http://nodus:8080` |
+| origin (host, Node-side requests) | `http://localhost:8080` — this checkout uses **18080**, see below |
+| origin (browser) | `https://nodus.test` — resolved to `NODUS_HTTPS_PORT` by Playwright |
+| origin (in the `nodus-lab` network) | `http://nodus.test:8080` |
 | admin | `admin@nodus.test` / `nodus-lab-admin` (from `.env`) |
 | ordinary account | `ada@nodus.test` / `lab-password-ada` |
 | ordinary account | `grace@nodus.test` / `lab-password-grace` |
@@ -90,7 +91,7 @@ this is also why a `reset.sh` right after a CA change needs the peers restarted.
 | Valkey | `valkey:6379`, `requirepass` from `.env` |
 
 `NODUS_HTTP_PORT` is the only host-port knob (default `8080`).
-`http://nodus:8080` is Caddy's network alias, so the origin is stable for peers
+`http://nodus.test:8080` is Caddy's network alias, so the origin is stable for peers
 and for federation identity even when the host port changes.
 
 This checkout sets `NODUS_HTTP_PORT=18080` in the untracked `integration/.env`
@@ -220,6 +221,14 @@ exactly as a host run reaches it. The host `e2e/node_modules` is never touched.
 `LAB_BASE_URL`, `LAB_HTTP_PORT` and `LAB_HTTPS_PORT` override the ports; CI
 passes `LAB_BASE_URL=http://127.0.0.1:$LAB_HTTP_PORT`.
 
+The suite has two origins on purpose. The browser browses the canonical origin,
+`https://nodus.test` (`LAB_ORIGIN`), which `playwright.config.mjs` resolves to
+`LAB_HTTPS_PORT` with `--host-resolver-rules`; signing in there is what makes a
+handle read `@ada@nodus.test` and a discovery request carry an
+`X-Instance-Host` the API accepts. Requests that Playwright issues from node
+(`page.request`, `helpers/api.mjs`) cannot use a resolver rule, so they target
+`LAB_BASE_URL` instead.
+
 ### Visual baselines are container-rendered
 
 The committed PNGs under `e2e/tests/*-snapshots/` are the source of truth for
@@ -299,15 +308,19 @@ committed.
 Notable knobs (all documented inline in `.env.example`):
 
 - `NODUS_HTTP_PORT` — the only host port.
-- `NODUS_AUTH_SECURE_COOKIES=false` and `NODUS_BASE_URL=http://nodus:8080` —
+- `NODUS_AUTH_SECURE_COOKIES=false` and `NODUS_BASE_URL=http://nodus.test:8080` —
   the lab is HTTP end to end.
 - `NODUS_REGISTRATIONS_OPEN=true` — `seed.sh` registers over `/auth/register`.
   The binary parses this as a bool: `1` is rejected at boot.
-- `NODUS_DOMAIN=nodus` — the identity federation sees.
+- `NODUS_DOMAIN=nodus.test` — the identity federation sees. It has to be a
+  dotted host name: an ActivityPub origin is a host name, and the API refuses a
+  single-label one as `X-Instance-Host` (`crates/api/src/activitypub.rs`,
+  `is_disallowed_domain`).
 - `NODUS_ALLOW_PRIVATE_HOSTS` — comma-separated hosts the API may dial on
   private addresses; the peers task fills this with `mastodon` and `misskey`.
 - `NODUS_DRIVE_SHARE_SECRET`, `TOKEN_ENC_KEY` — capability and worker secret.
-- `LAB_BASE_URL` (e2e only) — the origin Playwright drives.
+- `LAB_BASE_URL` (e2e only) — the host origin node-side requests use.
+- `LAB_ORIGIN` (e2e only) — the canonical origin the browser drives, `https://nodus.test`.
 
 ## Federation peers
 
@@ -316,7 +329,7 @@ Notable knobs (all documented inline in `.env.example`):
 `http://127.0.0.1:18082` — each with its own database and cache. It joins the
 existing `nodus-lab` network (declared `external: true`), keeps container names
 prefixed `nodus-lab-`, and relies on the origin being reachable as
-`http://nodus:8080` inside that network. Peers must not publish 8080 or 5432.
+`http://nodus.test:8080` inside that network. Peers must not publish 8080 or 5432.
 
 Use the script, not raw compose: it fills the peer secrets in `.env` and runs
 the setup and seeding steps in order.

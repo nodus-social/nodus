@@ -4,6 +4,16 @@ Surfaces the lab shell does not render at this build, recorded per the
 skip policy: a spec that cannot pass without a product change is marked
 `test.fixme` with one of the reasons below. Each row names the owning crate.
 
+## Closed: the lab's origin was a single-label host (was: `discovery request failed`)
+
+The shell showed `discovery request failed: Status { status: 400, message:
+"X-Instance-Host must be a bare host name such as mastodon.social" }` on every
+signed-in page, because the lab called itself `nodus` and the browser signed in
+at `127.0.0.1:<port>`. Both are refused by the API on purpose
+(`crates/api/src/activitypub.rs`, `is_disallowed_domain`), so the lab — not the
+guard — was wrong. Closed without a product change: the canonical origin is now
+`nodus.test` and the suite signs in there, so `X-Instance-Host` is a host name.
+
 ## The federated timeline serves local posts only
 
 `integration/e2e/tests/federation*.spec.mjs` shows peer-authored statuses

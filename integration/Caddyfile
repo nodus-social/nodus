@@ -12,7 +12,7 @@
 {
 	admin off
 	# The :8080 site is a bare port, so there is nothing to redirect; keeping
-	# certificate automation on is what lets `tls internal` issue for `nodus`. With
+	# certificate automation on is what lets `tls internal` issue for `nodus.test`. With
 	# `off`, Caddy disables cert automation outright and the 443 listener comes up
 	# without a connecting policy, answering the handshake with an internal error.
 	auto_https disable_redirects
@@ -111,8 +111,9 @@
 	}
 }
 
-# Host-side browsing: Playwright and up.sh probe http://127.0.0.1:$NODUS_HTTP_PORT.
-# Keyed on the port alone, because the browser may arrive as 127.0.0.1, localhost or nodus.
+# Host-side browsing: up.sh probes http://127.0.0.1:$NODUS_HTTP_PORT, and Playwright
+# maps `nodus.test:8080` here for the http absolute URLs in payloads. Keyed on the port
+# alone, because the browser may arrive as 127.0.0.1, localhost or nodus.test.
 :8080 {
 	import routes
 }
@@ -127,7 +128,12 @@
 # survives a restart but not a `reset.sh`; scripts/ca.sh exports its root to the generated
 # state/ca/nodus-lab-ca.crt, which the API and both peers mount (docs/peers.md, "TLS in
 # the lab"). Nothing about it is committed: every reset mints a new authority.
-https://nodus:443 {
+#
+# The name is dotted because the API's account addresses and its `X-Instance-Host` guard
+# both require a name ActivityPub can carry: `crates/api/src/activitypub.rs`
+# (`is_disallowed_domain`) rejects a single-label host, and Mastodon refuses to resolve
+# `ada@nodus`. `nodus.test` is the reserved test TLD, so nothing about the name needs DNS.
+https://nodus.test:443 {
 	tls internal
 	import routes
 }

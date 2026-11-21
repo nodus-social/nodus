@@ -10,8 +10,8 @@
 # server-sdk and recommender are one Cargo graph. The root .dockerignore keeps
 # targets and node_modules out of it. Peer instances (Mastodon, Misskey) live
 # in compose.peers.yml and join the same fixed network, `nodus-lab`, where this
-# origin answers as https://nodus (443, for the peers) and as http on 8080 (for
-# the host browser only).
+# origin answers as https://nodus.test (443, for the peers) and as http on 8080
+# (for the host browser only).
 #
 # The `:?` markers make compose fail early when .env is absent; up.sh fills the
 # secrets on first run.
@@ -19,11 +19,11 @@
 name: nodus-lab
 
 x-nodus-environment: &nodus-environment
-  NODUS_DOMAIN: ${NODUS_DOMAIN:-nodus}
+  NODUS_DOMAIN: ${NODUS_DOMAIN:-nodus.test}
   # Canonical identity: what peers are told to fetch, and what every
   # ActivityPub id and WebFinger alias is built from. It is the name Caddy
   # serves on 443, not the host's browser URL (see NODUS_HTTP_PORT).
-  NODUS_BASE_URL: ${NODUS_BASE_URL:-https://nodus}
+  NODUS_BASE_URL: ${NODUS_BASE_URL:-https://nodus.test}
   NODUS_TITLE: ${NODUS_TITLE:-Nodus Lab}
   NODUS_DESCRIPTION: ${NODUS_DESCRIPTION:-Lab instance}
   NODUS_CONTACT_EMAIL: ${NODUS_CONTACT_EMAIL:-lab@nodus.test}
@@ -168,7 +168,7 @@ services:
       NODUS_MEDIA_NODE: media-1
       # Media URLs are built from this endpoint, so it names the canonical
       # origin, not the host's browser port.
-      NODUS_MEDIA_ENDPOINT: https://nodus
+      NODUS_MEDIA_ENDPOINT: https://nodus.test
     healthcheck:
       # The media role serves bytes, not /healthz: a 200 on the built-in avatar
       # proves the router is up without touching the catalogue.
@@ -287,9 +287,9 @@ services:
       - nodus-data:/var/lib/nodus
     ports:
       - "${NODUS_HTTP_PORT:-8080}:8080"
-      # The canonical origin is https://nodus, and the host browser reaches it
-      # through this mapping because host 443 already belongs to something else.
-      # The Playwright config maps `nodus:443` to the same port; keep
+      # The canonical origin is https://nodus.test, and the host browser reaches
+      # it through this mapping because host 443 already belongs to something
+      # else. The Playwright config maps `nodus.test:443` to the same port; keep
       # LAB_HTTPS_PORT in step with NODUS_HTTPS_PORT.
       - "${NODUS_HTTPS_PORT:-18443}:443"
     # 443 still has to be open on the container's own interface for the peers,
@@ -301,7 +301,10 @@ services:
       default:
         aliases:
           # The identity NODUS_BASE_URL advertises, and the name peers resolve.
-          - nodus
+          # It has to be the dotted name: an ActivityPub origin is a host name,
+          # and the API rejects a single-label one (crates/api activitypub.rs,
+          # `is_disallowed_domain`) before a peer's WebFinger reaches it.
+          - nodus.test
           # The peer names, served here and proxied to the peer containers by
           # the two site blocks at the end of the Caddyfile. Caddy owns these
           # names so that `<name>:443` is unambiguous on the network: a peer

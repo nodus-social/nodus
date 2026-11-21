@@ -49,8 +49,8 @@ two peer site blocks serve:
 
     Caddy  https://mastodon.test (443)  ──►  mastodon:80     (web process)
     Caddy  https://misskey.test  (443)  ──►  misskey:18082  (container port)
-    Caddy  https://nodus          (443)  ──►  web + api      (the origin itself)
-    Caddy  http://nodus:8080             ──►  the same routes (host browser)
+    Caddy  https://nodus.test          (443)  ──►  web + api      (the origin itself)
+    Caddy  http://nodus.test:8080             ──►  the same routes (host browser)
 
 Mastodon's web process is on 80 rather than its default 3000 for the same
 reason it always was: `WEB_DOMAIN` cannot carry a port, so the app has to be
@@ -92,12 +92,12 @@ next to `https` ids and a peer that follows the aliases dead-ends on port 80.
 Both peers address a remote origin as `https://<domain>` and will not look anywhere else
 for a domain that is not `.onion`: Mastodon builds that URL in
 `app/lib/webfinger.rb:113-121` (`Webfinger#standard_url`), Misskey does the same when it
-delivers. A handle carries no port, so the name they dial is `nodus` on **443**. The lab
+delivers. A handle carries no port, so the name they dial is `nodus.test` on **443**. The lab
 origin therefore answers there as well as on `8080`:
 
 ```text
-http://nodus:8080   host browsing (Playwright, up.sh) and the origin-to-peer direction
-https://nodus       what a peer dials when it resolves or verifies ada@nodus
+http://nodus.test:8080   host browsing (Playwright, up.sh) and the origin-to-peer direction
+https://nodus.test       what a peer dials when it resolves or verifies ada@nodus.test
 ```
 
 `integration/Caddyfile` serves one route table on both entry points (`import routes`), so
@@ -176,29 +176,29 @@ use:
 
 ```sh
 docker exec nodus-lab-mastodon ruby -e \
-  'require "net/http"; puts Net::HTTP.get(URI("https://nodus/api/v1/meta"))'
+  'require "net/http"; puts Net::HTTP.get(URI("https://nodus.test/api/v1/meta"))'
 docker exec nodus-lab-misskey node -e \
-  'fetch("https://nodus/api/v1/meta").then(r=>r.text()).then(console.log)'
+  'fetch("https://nodus.test/api/v1/meta").then(r=>r.text()).then(console.log)'
 # both print:
 # {"api":"1","contract":"0.1.0","min_contract":"0.1.0",
 #  "features":["feed_accounts","events","sync_token"]}
 
 docker exec nodus-lab-mastodon ruby -e \
-  'require "net/http"; r = Net::HTTP.get_response(URI("https://nodus/.well-known/webfinger?resource=acct:ada@nodus")); puts r.code; puts r.body'
+  'require "net/http"; r = Net::HTTP.get_response(URI("https://nodus.test/.well-known/webfinger?resource=acct:ada@nodus.test.test")); puts r.code; puts r.body'
 # 200
-# {"aliases":["https://nodus/users/ada"],"links":[
-#   {"href":"https://nodus/users/ada","rel":"self","type":"application/activity+json"},
-#   {"href":"https://nodus/@ada","rel":"http://webfinger.net/rel/profile-page","type":"text/html"}],
-#  "subject":"acct:ada@nodus"}
+# {"aliases":["https://nodus.test/users/ada"],"links":[
+#   {"href":"https://nodus.test/users/ada","rel":"self","type":"application/activity+json"},
+#   {"href":"https://nodus.test/@ada","rel":"http://webfinger.net/rel/profile-page","type":"text/html"}],
+#  "subject":"acct:ada@nodus.test.test"}
 ```
 
 The third is the exact call that used to fail with
-`Connection refused - connect(2) for 172.20.0.11:443 on https://nodus/.well-known/webfinger`.
+`Connection refused - connect(2) for 172.20.0.11:443 on https://nodus.test/.well-known/webfinger`.
 
 ### The peers at their advertised origin
 
 Two more sites in `integration/Caddyfile`, in the same `(routes)`-snippet style as
-the `:8080` and `https://nodus:443` ones — except that each imports nothing,
+the `:8080` and `https://nodus.test:443` ones — except that each imports nothing,
 because it terminates a *peer's* origin and must proxy, not route:
 
 ```caddyfile
@@ -262,9 +262,9 @@ distinction the two runs below turn on.
 
 ### What this leg does not change
 
-- **The origin's identity is `https://nodus`.** `compose.yml` defaults
-  `NODUS_BASE_URL` to `https://nodus`, and the actor document's `id`, `inbox`,
-  `outbox`, `followers` and `publicKey.id` are all under it. `http://nodus:8080`
+- **The origin's identity is `https://nodus.test`.** `compose.yml` defaults
+  `NODUS_BASE_URL` to `https://nodus.test`, and the actor document's `id`, `inbox`,
+  `outbox`, `followers` and `publicKey.id` are all under it. `http://nodus.test:8080`
   stays served (Playwright, `up.sh`, the host browser) but is no longer the
   canonical address. See "Changing the base URL does not rewrite identity".
 - **The peers address the origin over TLS.** With `NODUS_ALLOW_INSECURE_PEERS`
@@ -322,7 +322,7 @@ unrelated to federation, and it retries without blocking the other queues.
 | ---------------------- | ----------------------------------------------------- |
 | `mastodon-account.json` | `{host, username, password, token, acct}`             |
 | `misskey-account.json`  | `{host, username, password, token, acct, adminToken}` |
-| `nodus-account.json`    | the lab's own `ada@nodus` OAuth token            |
+| `nodus-account.json`    | the lab's own `ada@nodus.test` OAuth token            |
 
 - **Mastodon:** created with `tootctl accounts create --confirmed --approve`,
   password set through the model (`tootctl accounts modify` has no
@@ -405,7 +405,7 @@ Reachability, from the origin's own container:
 docker exec nodus-lab-api getent hosts mastodon.test misskey.test nodus
 # 172.20.0.15     mastodon.test
 # 172.20.0.15     misskey.test
-# 172.20.0.15     nodus
+# 172.20.0.15     nodus.test
 docker exec nodus-lab-api printenv SSL_CERT_FILE
 # /tmp/nodus-lab-ca-bundle.crt
 docker exec nodus-lab-api printenv NODUS_ALLOW_PRIVATE_HOSTS
@@ -441,22 +441,22 @@ Mastodon's home timeline for alice then carries ada's posts:
 
 ```sh
 GET http://127.0.0.1:18081/api/v1/timelines/home?limit=10   # with alice's token
-# [{"id":"117652507445367982","uri":"https://nodus/statuses/01m7y59q9gft4th2zdz8b2r3y4",
-#   "url":"https://nodus/@ada/01m7y59q9gft4th2zdz8b2r3y4",
+# [{"id":"117652507445367982","uri":"https://nodus.test/statuses/01m7y59q9gft4th2zdz8b2r3y4",
+#   "url":"https://nodus.test/@ada/01m7y59q9gft4th2zdz8b2r3y4",
 #   "content":"<p>hello from nodus, misskey reaction check</p>",
-#   "account":{"acct":"ada@nodus","uri":"https://nodus/users/ada"}},...]
+#   "account":{"acct":"ada@nodus.test","uri":"https://nodus.test/users/ada"}},...]
 ```
 
 ### (b) Mastodon → nodus: follow, Accept and Create — **proven**
 
 The follow is a fresh resolution — the peer database was recreated for this run,
-so no cached `ada@nodus` row survived:
+so no cached `ada@nodus.test` row survived:
 
 ```sh
-GET /api/v2/search?q=https%3A%2F%2Fnodus%2Fusers%2Fada&resolve=true&type=accounts
-# HTTP 200 {"accounts":[{"id":"117652506454551665","acct":"ada@nodus",
-#                       "uri":"https://nodus/users/ada",
-#                       "inbox_url":"https://nodus/users/ada/inbox"},...]}
+GET /api/v2/search?q=https%3A%2F%2Fnodus.test%2Fusers%2Fada&resolve=true&type=accounts
+# HTTP 200 {"accounts":[{"id":"117652506454551665","acct":"ada@nodus.test",
+#                       "uri":"https://nodus.test/users/ada",
+#                       "inbox_url":"https://nodus.test/users/ada/inbox"},...]}
 
 POST /api/v1/accounts/117652506454551665/follow
 # HTTP 200 {"following":true,"requested":false,"followed_by":true,...}
@@ -499,7 +499,7 @@ first came back `401` for a reason that is *not* the host rule:
 
 ```text
 # nodus-lab-misskey, delivery queue
-[queue deliver] failed(UnrecoverableError: 401 Unauthorized) ... to=https://nodus/users/ada/inbox
+[queue deliver] failed(UnrecoverableError: 401 Unauthorized) ... to=https://nodus.test/users/ada/inbox
 # nodus-lab-api, the 401 body (a signed probe with alice's own key)
 401 {"error":"activitypub read failed: error sending request for url
 (https://misskey.test/users/attgqpslu33y0002)"}
@@ -522,13 +522,13 @@ curl -sS -H "authorization: Bearer $TOKEN" \
 After that, the same `peers.sh follow` run:
 
 ```sh
-POST /api/ap/show {"uri":"https://nodus/users/ada"}
-# HTTP 200 {"type":"User","object":{"id":"attgr0q8u33y0003","host":"nodus",
-#            "uri":"https://nodus/users/ada"}}
+POST /api/ap/show {"uri":"https://nodus.test/users/ada"}
+# HTTP 200 {"type":"User","object":{"id":"attgr0q8u33y0003","host":"nodus.test",
+#            "uri":"https://nodus.test/users/ada"}}
 POST /api/following/create {"userId":"attgr0q8u33y0003"}
 # HTTP 200
-POST /api/ap/show {"uri":"https://nodus/statuses/01m7y5hwj9dy41dn99nya8tmjw"}
-# HTTP 200 {"type":"Note","object":{...,"uri":"https://nodus/statuses/01m7y5hwj9dy41dn99nya8tmjw"}}
+POST /api/ap/show {"uri":"https://nodus.test/statuses/01m7y5hwj9dy41dn99nya8tmjw"}
+# HTTP 200 {"type":"Note","object":{...,"uri":"https://nodus.test/statuses/01m7y5hwj9dy41dn99nya8tmjw"}}
 POST /api/notes/reactions/create {"noteId":"attgwr9su33y0009","reaction":"👍"}
 # HTTP 204
 nodus reactions before: []
@@ -547,7 +547,7 @@ favourite and `status_reaction` stays empty:
   written only by the Misskey-compatible reactions API.
 - `like_local` resolves its target with `statuses::by_uri`
   (`crates/store/src/statuses.rs:191-198`), which matches `status.uri`; local
-  rows have a null `uri`, so a `Like` aimed at `https://nodus/statuses/<id>`
+  rows have a null `uri`, so a `Like` aimed at `https://nodus.test/statuses/<id>`
   finds nothing and returns `Ok`. `status_for_uri`/`local_status_id`
   (`crates/api/src/poll_votes.rs:125-139`) already handle both spellings, but
   `like_local`/`boost_local` do not use them. Mastodon has the same result: it
@@ -598,7 +598,7 @@ not trustworthy, so the refusal is correct product behaviour and the guard was
 left untouched. The old lab names hit it before the key was fetched:
 
 ```text
-POST https://nodus/users/ada/inbox   (keyId .../users/alice#main-key, mastodon.local)
+POST https://nodus.test/users/ada/inbox   (keyId .../users/alice#main-key, mastodon.local)
 # 401 {"error":"signing key actor URL is invalid"}
 ```
 
@@ -617,8 +617,8 @@ and host classification all line up.
 
 ## Two node URLs, and which one is ActivityPub
 
-    status.uri / status.url  ->  https://nodus/@ada/<id>      (HTML page)
-    AP object id (outbox)    ->  https://nodus/statuses/<id>  (activity+json)
+    status.uri / status.url  ->  https://nodus.test/@ada/<id>      (HTML page)
+    AP object id (outbox)    ->  https://nodus.test/statuses/<id>  (activity+json)
 
 `/@ada/<id>` answers `text/html` even for `Accept: application/activity+json`,
 so a peer that dereferences `status.uri` sees a web page and reports
@@ -632,11 +632,11 @@ persisted (`ensure_identity` → `accounts::set_actor_identity`,
 `crates/api/src/activitypub.rs:1735-1760`). Changing `NODUS_BASE_URL` therefore
 leaves whichever accounts already had an identity pointing at the old URL, while
 `url` and the rest of the document follow the new one — an actor whose `id` and
-`inbox` are `http://nodus:8080/...` and whose `url` is `https://nodus/@ada`.
+`inbox` are `http://nodus.test:8080/...` and whose `url` is `https://nodus.test/@ada`.
 Misskey refused exactly that in the first attempt of this run:
 
-    bad Activity: neither id(http://nodus:8080/users/ada) nor
-    url(https://nodus/@ada) match location(https://nodus/users/ada)
+    bad Activity: neither id(http://nodus.test:8080/users/ada) nor
+    url(https://nodus.test/@ada) match location(https://nodus.test/users/ada)
 
 That is the lab's migration step, not a backend change — reset the identity
 columns of the local accounts that predate the new base URL and let the next
@@ -655,16 +655,16 @@ After that the actor document is consistent:
 
 ```sh
 docker exec nodus-lab-api curl -s -k -H 'accept: application/activity+json' \
-  https://nodus/users/ada | jq -r '.id, .url, .inbox, .publicKey.id'
-# https://nodus/users/ada
-# https://nodus/@ada
-# https://nodus/users/ada/inbox
-# https://nodus/users/ada#main-key
+  https://nodus.test/users/ada | jq -r '.id, .url, .inbox, .publicKey.id'
+# https://nodus.test/users/ada
+# https://nodus.test/@ada
+# https://nodus.test/users/ada/inbox
+# https://nodus.test/users/ada#main-key
 ```
 
 The peers cache the old identity, so they need the same treatment on their side:
-destroy the remote `ada@nodus` account in Mastodon
-(`Account.find_by(domain: "nodus", username: "ada").destroy`) and
+destroy the remote `ada@nodus.test` account in Mastodon
+(`Account.find_by(domain: "nodus.test", username: "ada").destroy`) and
 `delete from "user" where host is not null` in Misskey's database. Both were
 re-resolved fresh for this run, which is what makes (b)'s `uri` value evidence.
 

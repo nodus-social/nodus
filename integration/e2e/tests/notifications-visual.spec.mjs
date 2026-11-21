@@ -5,7 +5,7 @@
 
 import { expect, test } from '@playwright/test';
 
-import { ACCOUNTS, BASE_URL } from '../fixtures.mjs';
+import { ACCOUNTS, BROWSER_ORIGIN } from '../fixtures.mjs';
 import {
   clearNotifications,
   createStatus,
@@ -19,7 +19,7 @@ import { prepareVisualPage, volatileMasks } from '../helpers/visual.mjs';
 test('notifications with one favourite', async ({ page, browser }) => {
   // Same ordering rule as notifications.spec.mjs: the inbox has to be empty
   // before the page under test signs in, or the badge counts stale rows.
-  const setupContext = await browser.newContext({ baseURL: BASE_URL });
+  const setupContext = await browser.newContext({ baseURL: BROWSER_ORIGIN });
   const setupPage = await setupContext.newPage();
   const setup = await signIn(setupPage, ACCOUNTS.ada);
   await clearNotifications(setupPage.request, setup);
@@ -30,7 +30,7 @@ test('notifications with one favourite', async ({ page, browser }) => {
   );
   await setupContext.close();
 
-  const graceContext = await browser.newContext({ baseURL: BASE_URL });
+  const graceContext = await browser.newContext({ baseURL: BROWSER_ORIGIN });
   const gracePage = await graceContext.newPage();
   const graceSession = await signIn(gracePage, ACCOUNTS.grace);
   await favouriteStatus(gracePage.request, graceSession, status.id);

@@ -65,19 +65,18 @@ https_port=${LAB_HTTPS_PORT:-${https_port:-18443}}
 base_url=${LAB_BASE_URL:-http://127.0.0.1:${port}}
 
 # `--network host` puts 127.0.0.1 inside the container on the host: the lab's
-# Caddy port is reached exactly as a host run reaches it. A bridge network with
-# the docker host gateway would make the instance `host.docker.internal`, and
-# the client only defaults a bare instance to plain http when it is an IP
-# loopback (web/crates/web-client/src/state/oauth/mod.rs), so sign-in would go
-# to https and fail. The resolver rule in playwright.config.mjs keeps mapping
-# nodus:443 to LAB_HTTPS_PORT, so absolute media URLs work unchanged.
+# Caddy port is reached exactly as a host run reaches it, which is what the
+# suite's Node-side requests need (page.request has no resolver rules). The
+# browser itself browses the canonical origin, `https://nodus.test`, through the
+# resolver rule in playwright.config.mjs, which maps nodus.test:443 to
+# LAB_HTTPS_PORT.
 if [ "${1-}" = "--" ]; then
 	shift
 fi
 
 printf 'playwright image  %s\n' "$PLAYWRIGHT_IMAGE"
-printf 'base url          %s\n' "$base_url"
-printf 'nodus:443 target  127.0.0.1:%s\n' "$https_port"
+printf 'lab base url      %s\n' "$base_url"
+printf 'browser origin    %s -> 127.0.0.1:%s\n' "${LAB_ORIGIN:-https://nodus.test}" "$https_port"
 printf 'args              %s\n' "$*"
 
 docker volume create "$NODE_MODULES_VOLUME" >/dev/null
@@ -102,6 +101,7 @@ docker run --rm --init \
 	-e HOME=/tmp \
 	-e npm_config_cache=/tmp/npm-cache \
 	-e LAB_BASE_URL="$base_url" \
+	-e LAB_ORIGIN="${LAB_ORIGIN:-https://nodus.test}" \
 	-e LAB_HTTPS_PORT="$https_port" \
 	"$PLAYWRIGHT_IMAGE" \
 	sh -c 'npm ci --no-audit --no-fund && exec ./node_modules/.bin/playwright test "$@"' \

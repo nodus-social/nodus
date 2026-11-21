@@ -10,7 +10,7 @@
 
 import { expect, test } from '@playwright/test';
 
-import { ACCOUNTS, BASE_URL } from '../fixtures.mjs';
+import { ACCOUNTS, BROWSER_ORIGIN } from '../fixtures.mjs';
 import {
   clearNotifications,
   createStatus,
@@ -29,7 +29,7 @@ test('a favourite and a reply from another account reach the inbox', async ({
   // never drops ids a clear removed, so clearing after sign-in would measure the
   // previous run. Clear first, then let the page under test sign in once the
   // notices exist: its boot fetch is exactly this run's inbox.
-  const setupContext = await browser.newContext({ baseURL: BASE_URL });
+  const setupContext = await browser.newContext({ baseURL: BROWSER_ORIGIN });
   const setupPage = await setupContext.newPage();
   const setup = await signIn(setupPage, ACCOUNTS.ada);
   await clearNotifications(setupPage.request, setup);
@@ -46,7 +46,7 @@ test('a favourite and a reply from another account reach the inbox', async ({
 
   // Grace acts through her own signed-in session and the same REST endpoints
   // the UI calls; nothing here writes to the database directly.
-  const graceContext = await browser.newContext({ baseURL: BASE_URL });
+  const graceContext = await browser.newContext({ baseURL: BROWSER_ORIGIN });
   const gracePage = await graceContext.newPage();
   const graceSession = await signIn(gracePage, ACCOUNTS.grace);
   const grace = await lookupAccount(gracePage.request, graceSession, 'grace');
@@ -60,7 +60,7 @@ test('a favourite and a reply from another account reach the inbox', async ({
   );
 
   try {
-    const session = await signIn(page, ACCOUNTS.ada);
+    await signIn(page, ACCOUNTS.ada);
     await navigate(page, '/notifications');
 
     const favourite = page

@@ -6,15 +6,22 @@
 // If you change a credential or a post here, change it in
 // integration/scripts/seed.sh too and rerun the seed.
 
-// Host origin of the lab. Defaults to the documented port; LAB_BASE_URL is the
-// same override playwright.config.mjs honours.
+// Host origin of the lab: what a Node-side request reaches (page.request,
+// helpers/api.mjs). Defaults to the documented port; LAB_BASE_URL is the same
+// override playwright.config.mjs honours.
 export const BASE_URL = process.env.LAB_BASE_URL ?? 'http://127.0.0.1:8080';
 
-// What the browser types into the Instance field. The scheme is left out
-// because the client adds http for loopback addresses; 127.0.0.1 is loopback,
-// so this instance is allowed to speak plain HTTP. The host:port comes from
-// BASE_URL so a lab on another port still signs in.
-export const INSTANCE_HOST = new URL(BASE_URL).host;
+// What the browser types into the Instance field, and what the specs navigate.
+// It is the lab's canonical origin, which the browser reaches through the
+// resolver rule in playwright.config.mjs. Signing in at the host origin instead
+// would name every account `user@127.0.0.1:<port>`, and the shell sends that
+// string as `X-Instance-Host`, which the API refuses: an instance is a host
+// name, and a name with a port in it is not one.
+export const BROWSER_ORIGIN = process.env.LAB_ORIGIN ?? 'https://nodus.test';
+
+// The bare host the client would parse out of that origin, which is also the
+// domain half of every handle the shell renders.
+export const INSTANCE_HOST = new URL(BROWSER_ORIGIN).host;
 
 export const ACCOUNTS = {
   ada: {

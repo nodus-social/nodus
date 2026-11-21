@@ -3,26 +3,32 @@ import { defineConfig, devices } from '@playwright/test';
 // The stack is expected to be up (`integration/scripts/up.sh`); this config
 // never starts servers, because the point is to test the dockerised origin.
 //
-// The public origin defaults to the lab contract, http://127.0.0.1:8080.
-// LAB_BASE_URL exists for a host where that port is already taken; the same
-// value must be passed to the spec README commands and to up.sh (NODUS_HTTP_PORT).
-const baseURL = process.env.LAB_BASE_URL ?? 'http://127.0.0.1:8080';
-const origin = new URL(baseURL);
-const originHost = origin.hostname === 'localhost' ? '127.0.0.1' : origin.hostname;
+// Two origins, because a browser and a Node request reach the same stack
+// differently. `baseURL` is the canonical origin the browser browses, which is
+// the name the lab federates under (NODUS_BASE_URL, https://nodus.test): signing
+// in there is what makes the shell show `@ada@nodus.test` and send a
+// `X-Instance-Host` the API accepts. The lab's host port is a separate origin
+// (`LAB_BASE_URL`, http://127.0.0.1:$NODUS_HTTP_PORT) that `page.request` and
+// helpers/api.mjs use, because --host-resolver-rules is a browser flag and a
+// Node-side fetch of `nodus.test` would need real DNS.
+const baseURL = process.env.LAB_ORIGIN ?? 'https://nodus.test';
+const hostOrigin = new URL(process.env.LAB_BASE_URL ?? 'http://127.0.0.1:8080');
+const originHost = hostOrigin.hostname === 'localhost' ? '127.0.0.1' : hostOrigin.hostname;
 
-// NODUS_BASE_URL is https://nodus, so absolute media, avatar and profile URLs in
-// API payloads name that host. The browser cannot resolve it and the host owns
-// 443, so compose publishes Caddy's 443 on NODUS_HTTPS_PORT (18443 by default)
-// and this rule sends `nodus:443` there. The certificate is Caddy's internal
-// CA, which the browser has no reason to trust, hence ignoreHTTPSErrors below.
+// Absolute media, avatar and profile URLs in API payloads name the canonical
+// host, which the browser cannot resolve and whose port 443 the host already
+// owns, so compose publishes Caddy's 443 on NODUS_HTTPS_PORT (18443 by default)
+// and this rule sends `nodus.test:443` there. The certificate is Caddy's
+// internal CA, which the browser has no reason to trust, hence
+// ignoreHTTPSErrors below.
 //
-// The http rule stays for any `http://nodus:8080` absolute URL that still
-// appears (up.sh probes and older payloads): it rewrites host *and* port so the
-// name does not land on whatever else listens on 8080.
+// The http rule stays for any `http://nodus.test:8080` absolute URL that still
+// appears (up.sh probes, in-network payloads): it rewrites host *and* port so
+// the name does not land on whatever else listens on 8080.
 const httpsPort = process.env.LAB_HTTPS_PORT ?? '18443';
 const resolverRules = [
-  `MAP nodus:8080 ${originHost}:${origin.port || '80'}`,
-  `MAP nodus:443 ${originHost}:${httpsPort}`,
+  `MAP nodus.test:8080 ${originHost}:${hostOrigin.port || '80'}`,
+  `MAP nodus.test:443 ${originHost}:${httpsPort}`,
 ].join(', ');
 
 export default defineConfig({

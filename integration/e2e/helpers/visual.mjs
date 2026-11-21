@@ -40,11 +40,18 @@ export async function prepareVisualPage(page, scope) {
 /// ("26m", "now") and the unread badge count change without a deploy, so mask
 /// them rather than hiding them in CSS. Masks are painted in the baseline too,
 /// so a layout shift around a masked node is still visible.
+///
+/// The notifications *link* is what gets masked, not the badge inside it. The
+/// badge only exists while the count is non-zero, and that count is a record of
+/// what other specs did (the favourite and reply notifications.spec.mjs creates),
+/// not a property of the page in the screenshot. A mask on the badge agrees only
+/// with the state that happened to be current when the baseline was captured;
+/// the link's box is the same with or without it.
 export function volatileMasks(page) {
   return [
     page.locator('time'),
     page.locator('[datetime]'),
     page.locator('header a[href*="/status/"]'),
-    page.locator('[data-notice-count]'),
+    page.locator('a[href="/notifications"]'),
   ];
 }

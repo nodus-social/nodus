@@ -369,7 +369,7 @@ seed_nodus_token() {
     }
     jq -n --arg host "$NODUS_URL" --arg username ada \
         --arg password lab-password-ada --arg token "$token" \
-        --arg acct ada@nodus \
+        --arg acct ada@nodus.test \
         '{host: $host, username: $username, password: $password,
           token: $token, acct: $acct}' >"$STATE_DIR/nodus-account.json"
     chmod 600 "$STATE_DIR/nodus-account.json"
@@ -384,7 +384,7 @@ seed_nodus_token() {
 mastodon_follower_count() {
     local token search
     token=$(jq -r .token "$STATE_DIR/mastodon-account.json")
-    search=$(mastodon_api GET '/api/v2/search?q=%40ada%40nodus&resolve=true&type=accounts' "$token")
+    search=$(mastodon_api GET '/api/v2/search?q=%40ada%40nodus.test&resolve=true&type=accounts' "$token")
     printf '%s\n' "$search" | json_body | jq -r '.accounts[0].followers_count // 0'
 }
 
@@ -397,7 +397,7 @@ wait_for_mastodon_follower() {
         attempt=$((attempt + 1))
         sleep 1
     done
-    printf 'RESULT: Mastodon never listed ada@nodus as a follower\n'
+    printf 'RESULT: Mastodon never listed ada@nodus.test as a follower\n'
     return 1
 }
 
@@ -478,7 +478,7 @@ check_nodus_to_mastodon() {
 
 check_mastodon_to_nodus() {
     local token search account_id
-    printf '\n=== Mastodon -> nodus: alice follows ada@nodus ===\n'
+    printf '\n=== Mastodon -> nodus: alice follows ada@nodus.test ===\n'
     [ -f "$STATE_DIR/mastodon-account.json" ] || {
         printf 'skipped: no Mastodon token (run peers.sh seed)\n'
         return 1
@@ -490,19 +490,19 @@ check_mastodon_to_nodus() {
     # `.onion` (`app/lib/webfinger.rb`, `standard_url`), which is what the origin
     # answers on 443. The actor URL goes straight to the resolver and never
     # reaches WebFinger.
-    search=$(mastodon_api GET '/api/v2/search?q=https%3A%2F%2Fnodus%2Fusers%2Fada&resolve=true&type=accounts' "$token")
+    search=$(mastodon_api GET '/api/v2/search?q=https%3A%2F%2Fnodus.test%2Fusers%2Fada&resolve=true&type=accounts' "$token")
     printf '%s\n' "$search"
     account_id=$(printf '%s' "$search" | json_body | jq -r '.accounts[0].id // empty')
 
     if [ -z "$account_id" ]; then
         printf -- '-- resolve by handle\n'
-        search=$(mastodon_api GET '/api/v2/search?q=%40ada%40nodus&resolve=true' "$token")
+        search=$(mastodon_api GET '/api/v2/search?q=%40ada%40nodus.test&resolve=true' "$token")
         printf '%s\n' "$search"
         account_id=$(printf '%s' "$search" | json_body | jq -r '.accounts[0].id // empty')
     fi
 
     [ -n "$account_id" ] || {
-        printf 'RESULT: Mastodon could not resolve ada@nodus, so no Follow was sent.\n'
+        printf 'RESULT: Mastodon could not resolve ada@nodus.test, so no Follow was sent.\n'
         return 1
     }
     printf -- '-- follow account %s\n' "$account_id"
@@ -517,7 +517,7 @@ check_mastodon_to_nodus() {
 }
 
 check_misskey_to_nodus() {
-    printf '\n=== Misskey -> nodus: alice@misskey.test follows ada@nodus ===\n'
+    printf '\n=== Misskey -> nodus: alice@misskey.test follows ada@nodus.test ===\n'
     if [ ! -f "$STATE_DIR/misskey-account.json" ] || [ -z "$(nodus_token)" ]; then
         printf 'skipped: missing Misskey or Nodus token (run peers.sh seed)\n'
         return 1
@@ -535,23 +535,23 @@ check_misskey_to_nodus() {
         "$(nodus_token)" >/dev/null
 
     printf -- '-- resolve by actor URL via ap/show\n'
-    # WebFinger for `nodus` builds https://nodus, which Caddy answers on 443;
+    # WebFinger for `nodus.test` builds https://nodus.test, which Caddy answers on 443;
     # ap/show takes the actor URL the origin publishes and skips discovery.
     response=$(misskey_api ap/show "$token" \
-        "$(jq -nc '{uri: "https://nodus/users/ada"}')")
+        "$(jq -nc '{uri: "https://nodus.test/users/ada"}')")
     printf '%s\n' "$response"
     user_id=$(printf '%s' "$response" | json_body | jq -r '.object.id // empty')
 
     if [ -z "$user_id" ]; then
         printf -- '-- resolve by handle\n'
         response=$(misskey_api users/show "$token" \
-            "$(jq -nc '{username: "ada", host: "nodus"}')")
+            "$(jq -nc '{username: "ada", host: "nodus.test"}')")
         printf '%s\n' "$response"
         user_id=$(printf '%s' "$response" | json_body | jq -r '.id // empty')
     fi
 
     [ -n "$user_id" ] || {
-        printf 'RESULT: Misskey could not resolve ada@nodus, so no Follow was sent.\n'
+        printf 'RESULT: Misskey could not resolve ada@nodus.test, so no Follow was sent.\n'
         return 1
     }
     printf -- '-- follow user %s\n' "$user_id"
@@ -560,8 +560,8 @@ check_misskey_to_nodus() {
 
     printf -- '-- react to a nodus note\n'
     # The note is dereferenced by its ActivityPub id, which is not the Mastodon-API
-    # `uri`: the origin serves `https://nodus/@ada/<id>` as HTML even for an
-    # ActivityPub Accept header, and only `https://nodus/statuses/<id>` is the
+    # `uri`: the origin serves `https://nodus.test/@ada/<id>` as HTML even for an
+    # ActivityPub Accept header, and only `https://nodus.test/statuses/<id>` is the
     # object `/users/ada/outbox` lists. A fresh note is posted so the check never
     # depends on a home timeline that has nothing in it.
     note_status=$(nodus_api POST '/api/v1/statuses' "$(nodus_token)" \
@@ -571,7 +571,7 @@ check_misskey_to_nodus() {
     printf 'nodus note id: %s\n' "$note_address"
     [ -n "$note_address" ] || return 1
     response=$(misskey_api ap/show "$token" \
-        "$(jq -nc --arg uri "https://nodus/statuses/$note_address" '{uri: $uri}')")
+        "$(jq -nc --arg uri "https://nodus.test/statuses/$note_address" '{uri: $uri}')")
     printf '%s\n' "$response"
     note_id=$(printf '%s' "$response" | json_body | jq -r '.object.id // empty')
     [ -n "$note_id" ] || {
