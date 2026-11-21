@@ -248,6 +248,16 @@ services:
     # trusts the private address (validate.rs, `configured_trusted_private_hosts`),
     # and the lab root appended to the image's store. Without them the self-read
     # is refused and the proxy falls back to the peer, which is the 502.
+    #
+    # The signed-in path does not use `local_read`: the session token makes the
+    # proxy relay to the peer itself (`https://mastodon.test`), and the same
+    # guard refuses that host unless it is trusted too. That list lives in
+    # compose.peers.yml, but scripts/common.sh's `compose()` passes this file
+    # alone, so `up.sh` or any `compose up nodus-web` recreated the container
+    # without it and every signed-in permalink answered 502. The web block is
+    # therefore complete here: NODUS_ALLOW_PRIVATE_HOSTS mirrors nodus-api's
+    # value in compose.peers.yml (which overrides it when the peers are up).
+    # `nodus.test` needs no entry: NODUS_INSTANCE_HOST already trusts it.
     entrypoint: ["/usr/bin/tini", "--", "/opt/nodus/bin/lab-ca-entrypoint.sh"]
     environment:
       # The shell reads no instance config: it renders pages and proxies session
@@ -256,6 +266,7 @@ services:
       NODUS_ASSET_DIR: /srv/nodus
       NODUS_SESSIONS: /var/lib/nodus/sessions.json
       NODUS_INSTANCE_HOST: ${NODUS_DOMAIN:-nodus.test}
+      NODUS_ALLOW_PRIVATE_HOSTS: mastodon.test,misskey.test,mastodon,misskey
       SSL_CERT_FILE: /tmp/nodus-lab-ca-bundle.crt
     volumes:
       - nodus-data:/var/lib/nodus
