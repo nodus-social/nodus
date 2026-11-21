@@ -1,0 +1,23 @@
+# Peer instances for federation tests. Kept separate from compose.yml so the
+# single-origin stack stays small and starts without pulling Mastodon or
+# Misskey. The second agent fills this in; the contract it relies on is fixed
+# here:
+#
+#   docker compose -f integration/compose.yml \
+#     -f integration/compose.peers.yml up -d
+#
+# - the network is `nodus-lab` and already exists (created by compose.yml);
+# - this origin answers inside it as http://nodus:8080 and on the host as
+#   http://localhost:8080;
+# - peer service names and containers are prefixed `nodus-lab-`.
+#
+# Peers must not publish 8080 or 5432: Caddy owns 8080 and the host's existing
+# Postgres owns 5432.
+name: nodus-lab
+
+networks:
+  default:
+    name: nodus-lab
+    external: true
+
+services: {}

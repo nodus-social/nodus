@@ -1,0 +1,55 @@
+# syntax=docker/dockerfile:1
+
+# The six Nodus server binaries, built from this checkout on bookworm so the runtime
+# image (also bookworm) sees the same glibc. One image carries every role; compose picks
+# the binary with `command`.
+#
+#   docker build -f integration/Dockerfile.server -t nodus-lab/server:0.1.0 .
+#
+# The build context is the superproject root because every tree is one Cargo dependency
+# graph: nodus-backend reaches sdk/, server-sdk/ and recommender/ by path. The root
+# .dockerignore decides what enters the context (no target/, no node_modules/, no dist/).
+
+ARG RUST_VERSION=1-bookworm
+
+FROM rust:${RUST_VERSION} AS build
+WORKDIR /src
+COPY . /src
+WORKDIR /src/nodus-backend
+# The cargo registry and the target directory are cache mounts: the first build pays for
+# the dependency graph, later builds only recompile what changed. The binaries are copied
+# into the stage afterwards, because a cache mount itself is not part of the image.
+# --locked is deliberately absent: the committed Cargo.lock predates the
+# current sdk submodule revision, and regenerating it would be a source edit to
+# a submodule. Cargo resolves inside the image layer instead, so the checkout
+# is untouched and the lab builds the tree it was given.
+RUN --mount=type=cache,target=/usr/local/cargo/registry,id=nodus-cargo-registry \
+    --mount=type=cache,target=/usr/local/cargo/git,id=nodus-cargo-git \
+    --mount=type=cache,target=/src/nodus-backend/target,id=nodus-server-target \
+    cargo build --release \
+      --bin nodus-api --bin nodus-media --bin nodus-feed --bin nodus-scan \
+      --bin nodus-prune --bin nodus-calc \
+ && mkdir -p /out \
+ && cp target/release/nodus-api target/release/nodus-media target/release/nodus-feed \
+       target/release/nodus-scan target/release/nodus-prune target/release/nodus-calc /out/
+
+FROM debian:bookworm-slim AS runtime
+ENV DEBIAN_FRONTEND=noninteractive
+# ffmpeg/ffprobe are how the API renders image and video variants in-process; the media
+# service itself only serves the bytes the shared volume holds.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates curl ffmpeg tini \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /out/ /usr/local/bin/
+
+RUN useradd --system --uid 10001 --create-home --home-dir /var/lib/nodus nodus \
+ && mkdir -p /var/lib/nodus/media/variants \
+ && chown -R nodus:nodus /var/lib/nodus
+
+USER nodus
+WORKDIR /var/lib/nodus
+
+EXPOSE 3000
+ENTRYPOINT ["/usr/bin/tini", "--"]

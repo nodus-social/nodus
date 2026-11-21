@@ -1,0 +1,286 @@
+# The single-origin Nodus lab. Every service is a container, so a test can
+# restart one role without restarting the rest; Caddy is the only published
+# port.
+#
+#   cp integration/.env.example integration/.env
+#   # fill the three secrets, then:
+#   docker compose -f integration/compose.yml up -d
+#
+# The build context is the superproject root: nodus-backend, web, sdk,
+# server-sdk and recommender are one Cargo graph. The root .dockerignore keeps
+# targets and node_modules out of it. Peer instances (Mastodon, Misskey) live
+# in compose.peers.yml and join the same fixed network, `nodus-lab`, where this
+# origin answers as http://nodus:8080.
+#
+# The `:?` markers make compose fail early when .env is absent; up.sh fills the
+# secrets on first run.
+
+name: nodus-lab
+
+x-nodus-environment: &nodus-environment
+  NODUS_DOMAIN: ${NODUS_DOMAIN:-nodus}
+  NODUS_BASE_URL: ${NODUS_BASE_URL:-http://nodus:8080}
+  NODUS_TITLE: ${NODUS_TITLE:-Nodus Lab}
+  NODUS_DESCRIPTION: ${NODUS_DESCRIPTION:-Lab instance}
+  NODUS_CONTACT_EMAIL: ${NODUS_CONTACT_EMAIL:-lab@nodus.test}
+  NODUS_DATABASE_URL: >-
+    postgres://nodus:${NODUS_DB_PASSWORD:?}@postgres:5432/nodus
+  NODUS_DATABASE_CONNECTIONS: ${NODUS_DATABASE_CONNECTIONS:-10}
+  NODUS_VALKEY_URL: >-
+    redis://:${VALKEY_PASSWORD:?}@valkey:6379/0
+  NODUS_AUTH_SECURE_COOKIES: ${NODUS_AUTH_SECURE_COOKIES:-false}
+  NODUS_REGISTRATIONS_OPEN: ${NODUS_REGISTRATIONS_OPEN:-true}
+  NODUS_AUTHORIZED_FETCH: ${NODUS_AUTHORIZED_FETCH:-false}
+  NODUS_ACCOUNT_DELETE_GRACE_DAYS: ${NODUS_ACCOUNT_DELETE_GRACE_DAYS:-30}
+  # Bootstrap is deliberately not in this shared block: every role would race to
+  # create the same admin on a fresh volume. Only nodus-api gets these three.
+  NODUS_DRIVE_SHARE_SECRET: ${NODUS_DRIVE_SHARE_SECRET:-}
+  NODUS_MEDIA_DIR: /var/lib/nodus/media
+  NODUS_MEDIA_VARIANTS_DIR: /var/lib/nodus/media/variants
+  NODUS_HOME_CAP: ${NODUS_HOME_CAP:-400}
+  NODUS_HOME_SHARDS: ${NODUS_HOME_SHARDS:-1}
+  NODUS_VALKEY_CHANNEL: ${NODUS_VALKEY_CHANNEL:-nodus:home}
+
+x-nodus-service: &nodus-service
+  image: nodus-lab/server:0.1.0
+  build:
+    # scripts/build.sh materialises the pinned submodule commits here; the
+    # Dockerfile lands next to the tree it copies. LAB_BUILD_FROM_WORKTREE=1
+    # points this at the superproject root instead.
+    context: ${NODUS_BUILD_CONTEXT:-./volumes/build-context}
+    dockerfile: ${NODUS_DOCKERFILE:-Dockerfile.server}
+  restart: unless-stopped
+  environment: *nodus-environment
+  volumes:
+    - nodus-data:/var/lib/nodus
+  depends_on:
+    postgres:
+      condition: service_healthy
+    valkey:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: nodus-lab-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_DB: postgres
+      NODUS_DB_PASSWORD: ${NODUS_DB_PASSWORD:?}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nodus -d nodus"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    # No host port: a development cluster here already publishes 5432, and
+    # the lab must stay reachable only through Caddy and the compose network.
+    expose:
+      - "5432"
+
+  valkey:
+    image: valkey/valkey:8.1-bookworm
+    container_name: nodus-lab-valkey
+    restart: unless-stopped
+    command:
+      - valkey-server
+      - --requirepass
+      - ${VALKEY_PASSWORD:?}
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+    environment:
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD:?}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          valkey-cli --no-auth-warning -a "$${VALKEY_PASSWORD}" ping
+          | grep -q PONG
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
+    expose:
+      - "6379"
+
+  nodus-api:
+    <<: *nodus-service
+    container_name: nodus-lab-api
+    command: ["nodus-api"]
+    environment:
+      <<: *nodus-environment
+      NODUS_BIND: 0.0.0.0:3000
+      NODUS_NODE_NAME: api-1
+      # Only the API bootstraps the admin; a second role doing it at the same
+      # moment trips account_local_username_idx on a fresh volume.
+      NODUS_BOOTSTRAP_EMAIL: ${NODUS_BOOTSTRAP_EMAIL:-admin@nodus.test}
+      NODUS_BOOTSTRAP_USERNAME: ${NODUS_BOOTSTRAP_USERNAME:-admin}
+      NODUS_BOOTSTRAP_PASSWORD: ${NODUS_BOOTSTRAP_PASSWORD:?}
+      # The admin topology view reads these once at boot. They are the compose
+      # service names, which resolve inside the `nodus-lab` network.
+      NODUS_TELEMETRY: >-
+        media=http://nodus-media-worker:3003,feed=http://nodus-feed:3000,scan=http://nodus-scan:3000,prune=http://nodus-prune:3000,calc=http://nodus-calc:3000
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
+
+  nodus-media-worker:
+    <<: *nodus-service
+    container_name: nodus-lab-media-worker
+    command: ["nodus-media"]
+    environment:
+      <<: *nodus-environment
+      NODUS_BIND: 0.0.0.0:3003
+      NODUS_MEDIA_NODE: media-1
+      NODUS_MEDIA_ENDPOINT: http://nodus:8080
+    healthcheck:
+      # The media role serves bytes, not /healthz: a 200 on the built-in avatar
+      # proves the router is up without touching the catalogue.
+      test:
+        - CMD-SHELL
+        - >-
+          curl -fsS -o /dev/null
+          http://127.0.0.1:3003/media/default-avatar.png
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  nodus-feed:
+    <<: *nodus-service
+    container_name: nodus-lab-feed
+    command: ["nodus-feed"]
+    environment:
+      <<: *nodus-environment
+      NODUS_BIND: 0.0.0.0:3000
+    healthcheck:
+      # The engine has no /healthz; /api/v1/meta is the cheapest route it owns
+      # and answers 200 without a session.
+      test:
+        - CMD-SHELL
+        - >-
+          curl -fsS -o /dev/null
+          http://127.0.0.1:3000/api/v1/meta
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  # scan, prune and calc are workers: their only listener is the gRPC control
+  # port, which no shell utility in the slim image can probe. They carry no
+  # healthcheck on purpose; a crashed worker exits and `restart` brings it back,
+  # and nothing on the request path waits for them.
+  nodus-scan:
+    <<: *nodus-service
+    container_name: nodus-lab-scan
+    command: ["nodus-scan"]
+    environment:
+      <<: *nodus-environment
+      NODUS_TELEMETRY_BIND: 0.0.0.0:3000
+
+  nodus-prune:
+    <<: *nodus-service
+    container_name: nodus-lab-prune
+    command: ["nodus-prune"]
+    environment:
+      <<: *nodus-environment
+      NODUS_TELEMETRY_BIND: 0.0.0.0:3000
+
+  nodus-calc:
+    <<: *nodus-service
+    container_name: nodus-lab-calc
+    command: ["nodus-calc"]
+    environment:
+      <<: *nodus-environment
+      NODUS_TELEMETRY_BIND: 0.0.0.0:3000
+      # calc opens the tokens the feed engine sealed; no key, no start.
+      TOKEN_ENC_KEY: ${TOKEN_ENC_KEY:?}
+  nodus-web:
+    image: nodus-lab/web:0.1.0
+    build:
+      context: ${NODUS_BUILD_CONTEXT:-./volumes/build-context}
+      dockerfile: ${NODUS_DOCKERFILE_WEB:-Dockerfile.web}
+    container_name: nodus-lab-web
+    restart: unless-stopped
+    command: ["nodus-web-server"]
+    environment:
+      # The shell reads no instance config: it renders pages and proxies session
+      # state. NODUS_SESSIONS lives on the shared volume so a restart keeps it.
+      NODUS_LISTEN: 0.0.0.0:3000
+      NODUS_ASSET_DIR: /srv/nodus
+      NODUS_SESSIONS: /var/lib/nodus/sessions.json
+    volumes:
+      - nodus-data:/var/lib/nodus
+    depends_on:
+      nodus-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    expose:
+      - "3000"
+
+  caddy:
+    image: nodus-lab/web:0.1.0
+    build:
+      context: ${NODUS_BUILD_CONTEXT:-./volumes/build-context}
+      dockerfile: ${NODUS_DOCKERFILE_WEB:-Dockerfile.web}
+    container_name: nodus-lab-caddy
+    restart: unless-stopped
+    command:
+      - caddy
+      - run
+      - --config
+      - /etc/caddy/Caddyfile
+      - --adapter
+      - caddyfile
+    # integration/ is outside the root build context (.dockerignore), so the
+    # route table is mounted rather than baked. Editing it is a restart.
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - nodus-data:/var/lib/nodus
+    ports:
+      - "${NODUS_HTTP_PORT:-8080}:8080"
+    networks:
+      default:
+        aliases:
+          # The identity NODUS_BASE_URL advertises, and the name peers resolve.
+          - nodus
+    depends_on:
+      nodus-api:
+        condition: service_healthy
+      nodus-web:
+        condition: service_healthy
+      nodus-media-worker:
+        condition: service_healthy
+      nodus-feed:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+volumes:
+  postgres-data:
+  nodus-data:
+
+networks:
+  default:
+    # Fixed so compose.peers.yml can attach Mastodon and Misskey to the same
+    # network without knowing this project's directory name.
+    name: nodus-lab

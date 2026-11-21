@@ -21,3 +21,10 @@
 # release builds produced by the deploy scripts
 target-bookworm/
 /rust_out
+
+# the nodus lab: generated at run time, never committed
+integration/.env
+integration/volumes/
+integration/e2e/node_modules/
+integration/e2e/test-results/
+integration/e2e/playwright-report/

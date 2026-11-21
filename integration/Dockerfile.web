@@ -1,0 +1,105 @@
+# syntax=docker/dockerfile:1
+
+# The SSR shell, the trunk bundle and Caddy in one image. One image serves two compose
+# services: `nodus-web` runs the shell, `caddy` owns the single origin and the asset rule.
+# They share the bundle because Caddy's `file_server` serves it straight from disk.
+#
+#   docker build -f integration/Dockerfile.web -t nodus-lab/web:0.1.0 .
+
+ARG RUST_VERSION=1-bookworm
+# Trunk only ships gnu binaries, so the pin must stay at a release built against a glibc
+# bookworm (2.36) still provides. 0.22.1 does start here, but the loader prints a
+# `weak version 'GLIBC_2.39' not found` warning for it; 0.21.14 is the newest release that
+# starts clean, so it is pinned. A future bump must be smoke-tested with `trunk --version`
+# inside this stage before the wasm build is attempted (see the RUN below).
+ARG TRUNK_VERSION=0.21.14
+# The wasm optimizer is pinned too. bookworm's binaryen is 108, whose wasm-opt output
+# breaks wasm-bindgen 0.2.130's externref tables (the bundle then dies with
+# `WebAssembly.Table.set(): Argument 1 is invalid`), so a matching binaryen release is
+# fetched here and trunk is told not to fetch one itself.
+ARG WASM_OPT_VERSION=version_123
+# bookworm's nodejs 18 is below Tailwind 4's declared engine floor (>=20), so the bundle
+# stage takes node 22 from its own image rather than apt.
+ARG NODE_VERSION=22-bookworm-slim
+
+FROM rust:${RUST_VERSION} AS shell
+WORKDIR /src
+COPY . /src
+WORKDIR /src/web
+# Same reason as Dockerfile.server: the dated Cargo.lock is resolved in the
+# image layer rather than edited in the checkout.
+RUN --mount=type=cache,target=/usr/local/cargo/registry,id=nodus-cargo-registry \
+    --mount=type=cache,target=/usr/local/cargo/git,id=nodus-cargo-git \
+    --mount=type=cache,target=/src/web/target-server,id=nodus-web-server-target \
+    CARGO_TARGET_DIR=/src/web/target-server \
+    cargo build --release --bin nodus-web-server \
+ && mkdir -p /out \
+ && cp target-server/release/nodus-web-server /out/
+
+FROM node:${NODE_VERSION} AS node-dist
+
+FROM rust:${RUST_VERSION} AS bundle
+# Global ARGs are out of scope after FROM, so the pinned versions are re-declared here.
+ARG TRUNK_VERSION=0.21.14
+ARG WASM_OPT_VERSION=version_123
+ARG NODE_VERSION=22-bookworm-slim
+# bookworm's nodejs 18 is below Tailwind 4's declared engine floor (>=20), so the bundle
+# stage takes node 22 from its own image. trunk and wasm-opt are pinned prebuilt releases,
+# because compiling either would cost more than the artifacts they produce.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates xz-utils \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=node-dist /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-dist /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+ && ln -sf ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+ && node --version \
+ && npm --version
+RUN curl -fsSL --retry 5 --retry-delay 2 --max-time 600 \
+      "https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" \
+      | tar -xz -C /usr/local/bin trunk \
+ && trunk --version
+RUN curl -fsSL --retry 5 --retry-delay 2 --max-time 600 \
+      "https://github.com/WebAssembly/binaryen/releases/download/${WASM_OPT_VERSION}/binaryen-${WASM_OPT_VERSION}-x86_64-linux.tar.gz" \
+      | tar -xz -C /tmp \
+ && install -m 0755 "/tmp/binaryen-${WASM_OPT_VERSION}/bin/wasm-opt" /usr/local/bin/wasm-opt \
+ && rm -rf "/tmp/binaryen-${WASM_OPT_VERSION}"
+ENV TRUNK_TOOLS_WASM_OPT_VERSION=${WASM_OPT_VERSION}
+RUN rustup target add wasm32-unknown-unknown
+
+WORKDIR /src
+COPY . /src
+WORKDIR /src/web
+RUN npm ci --no-audit --no-fund --include=optional
+# npm 9 drops the platform binary of @tailwindcss/oxide that the lockfile names as an
+# optional dependency, so the native module is installed explicitly at the version npm
+# resolved. Without it the tailwind 4 CLI cannot load its native plugin.
+RUN node -e "const {version} = require('./node_modules/@tailwindcss/oxide/package.json');\
+require('child_process').execSync('npm install --no-save --no-audit --no-fund @tailwindcss/oxide-linux-x64-gnu@' + version, {stdio: 'inherit'});"
+RUN --mount=type=cache,target=/usr/local/cargo/registry,id=nodus-cargo-registry \
+    --mount=type=cache,target=/usr/local/cargo/git,id=nodus-cargo-git \
+    --mount=type=cache,target=/src/web/target,id=nodus-web-wasm-target \
+    node js/build.mjs && node js/css.mjs && trunk build --release
+
+FROM debian:bookworm-slim AS runtime
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      caddy curl ca-certificates tini \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=shell /out/nodus-web-server /usr/local/bin/nodus-web-server
+COPY --from=bundle /src/web/dist/ /srv/nodus/
+# The Caddyfile is not baked in: the superproject's .dockerignore keeps integration/ out
+# of the build context, and compose bind-mounts integration/Caddyfile into the caddy
+# service instead. That also makes a route edit a restart rather than a rebuild.
+
+RUN useradd --system --uid 10002 --create-home --home-dir /var/lib/nodus nodus \
+ && mkdir -p /var/lib/nodus/caddy \
+ && chown -R nodus:nodus /var/lib/nodus /srv/nodus
+
+USER nodus
+WORKDIR /var/lib/nodus
+
+EXPOSE 3000 8080
+ENTRYPOINT ["/usr/bin/tini", "--"]

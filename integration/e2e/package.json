@@ -1,0 +1,16 @@
+{
+  "name": "nodus-lab-e2e",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Host-side Playwright harness for the dockerised Nodus lab",
+  "scripts": {
+    "test": "playwright test",
+    "test:update": "playwright test --update-snapshots",
+    "test:functional": "playwright test tests/home.spec.mjs tests/profile.spec.mjs",
+    "test:visual": "playwright test tests/login-visual.spec.mjs tests/home-visual.spec.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65.0"
+  }
+}
