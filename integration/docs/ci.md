@@ -52,10 +52,18 @@ integration/scripts/ci.sh down                 # stop Docker-in-Docker
   `ci.sh up` replaces a running dind that lacks the mount, so an old container
   does not keep failing;
 - `--network host` for the `lab` job (and a whole-workflow run), because its
-  published ports (18080, 18443) and the nested e2e container need the host
-  network. Jobs that only need a service container (`rust-tests` and its
-  `postgres` service) run on act's bridge network, where the service hostname
-  resolves.
+  published ports (the workflow's `LAB_HTTP_PORT` and `LAB_HTTPS_PORT`, 18090
+  and 18453) and the nested e2e container need the host network. Jobs that only
+  need a service container (`rust-tests` and its `postgres` service) run on
+  act's bridge network, where the service hostname resolves.
+
+  The pair is deliberately not the developer defaults (8080/18443, or this
+  checkout's 18080): dind shares the host network namespace, so a lab started
+  with `integration/scripts/up.sh` holds the same ports and the run died with
+  `failed to bind host port 0.0.0.0:18443/tcp: address already in use`. With a
+  pair of its own, a local stack can stay up during a CI run. `ci.sh` reads the
+  pair out of the workflow and checks both with `ss` before starting act, so a
+  collision is named up front instead of surfacing from inside dind.
 
 Act is installed into `~/.local/bin` on first use (`ACT_VERSION`, default
 0.2.98). Logs land in `integration/.act/` (git-ignored).
@@ -92,8 +100,7 @@ through `DOCKER_HOST` live in the dind volume.
 | docker daemon | act, dind and the lab's images |
 | ~10 GB free disk | `catthehacker/ubuntu:act-24.04`, `rust:1-bookworm`, `pgvector/pgvector:pg17`, the lab images, dind's layer cache |
 | network (first run) | act binary, runner image, node toolchain, Playwright/Chromium, crates |
-| `LAB_HTTP_PORT` | optional; forwarded to the lab job. This checkout uses 18080 so it does not collide with the root-owned Caddy on 8080 |
-| `NODUS_HTTPS_PORT` | optional; forwarded for Caddy's 443 (default 18443) |
+| `LAB_HTTP_PORT`, `LAB_HTTPS_PORT` | not environment knobs: the workflow's own `env:` (18090/18453), so the CI lab does not collide with a developer stack. Every consumer derives from them — the `point the lab at the CI port` step writes `NODUS_HTTP_PORT`/`NODUS_HTTPS_PORT` into `integration/.env`, `integration/scripts/e2e.sh` reads that file back, and `LAB_BASE_URL` is built from `LAB_HTTP_PORT`. Change them in `ci.yml` |
 
 ## Stages, what they need, rough duration
 
@@ -159,7 +166,6 @@ pulls and a full cargo compile.
   local run green, and read the reports from the working tree instead
   (`web/e2e/playwright-report`, `integration/e2e/playwright-report`).
 - **Secrets and variables** are whatever is exported in the shell. The workflow
-  currently reads none, but `ci.sh` forwards `LAB_HTTP_PORT` and
-  `NODUS_HTTPS_PORT` only.
+  currently reads none.
 
 [nektos/act]: https://github.com/nektos/act

@@ -28,8 +28,10 @@
 #   ACT_DIND_IMAGE    Docker-in-Docker image, default docker:dind
 #   CI_DIND_PORT      dind API port on 127.0.0.1, default 2375
 #   CI_KEEP_DIND=1    leave dind running after `run`/`all` (faster next run)
-#   LAB_HTTP_PORT     forwarded to the workflow (the lab job publishes this port)
-#   NODUS_HTTPS_PORT  forwarded when set (the lab job publishes Caddy's 443)
+#
+# The lab job's host ports are the workflow's own `env:` (LAB_HTTP_PORT,
+# LAB_HTTPS_PORT), not knobs here: ci.sh reads them out of ci.yml so its
+# preflight cannot drift from what the job publishes. Change them there.
 #
 # Logs are written to integration/.act/ (git-ignored).
 set -euo pipefail
@@ -51,6 +53,18 @@ ACT_DIND_IMAGE=${ACT_DIND_IMAGE:-docker:dind}
 DIND_CONTAINER=${CI_DIND_CONTAINER:-nodus-act-dind}
 DIND_PORT=${CI_DIND_PORT:-2375}
 DIND_HOST="tcp://127.0.0.1:${DIND_PORT}"
+
+# The lab job publishes Caddy on these host ports (workflow `env:`), and dind
+# runs with `--network host`, so anything else listening there makes compose
+# fail deep inside the daemon:
+#   failed to set up container networking: … failed to bind host port
+#   0.0.0.0:18443/tcp: address already in use
+# Read the pair from the workflow rather than repeating it here.
+workflow_port() {
+    sed -n "s/^  $1: '\([0-9][0-9]*\)'.*/\1/p" "$WORKFLOW" | head -n 1
+}
+LAB_HTTP_PORT=$(workflow_port LAB_HTTP_PORT)
+LAB_HTTPS_PORT=$(workflow_port LAB_HTTPS_PORT)
 
 usage() {
     sed -n '2,36p' "$SCRIPT_DIR/ci.sh" | sed 's/^# \{0,1\}//'
@@ -192,6 +206,25 @@ reclaim_workspace() {
     fi
 }
 
+# Ports the lab job needs, checked before act starts. A developer lab
+# (`integration/scripts/up.sh`) holds 18080/18443 on this host, which is why
+# the workflow uses a pair of its own; if something else sits on the CI pair,
+# say which port and what usually owns it instead of letting dind surface it.
+require_free_lab_ports() {
+    local port holders
+    command -v ss >/dev/null || {
+        printf 'ci.sh: ss not found; skipping the lab port preflight\n' >&2
+        return 0
+    }
+    for port in "$LAB_HTTP_PORT" "$LAB_HTTPS_PORT"; do
+        [ -n "$port" ] || continue
+        holders=$(ss -ltnH "sport = :${port}" 2>/dev/null | awk '{print $4}' |
+            paste -sd' ' -)
+        [ -n "$holders" ] || continue
+        die "port ${port} is already in use (${holders}); the lab job publishes it and dind shares the host network, so compose cannot bind it. Stop what holds it (a developer lab: integration/scripts/down.sh), or move the CI pair in the workflow env."
+    done
+}
+
 # Maps ci.sh's --job to act's -j and keeps every other argument for act.
 run_act() {
     ensure_act
@@ -244,12 +277,7 @@ run_act() {
     fi
     if [ "$host_network" -eq 1 ]; then
         args+=(--network host)
-    fi
-    if [ -n "${LAB_HTTP_PORT:-}" ]; then
-        args+=(--env "LAB_HTTP_PORT=${LAB_HTTP_PORT}")
-    fi
-    if [ -n "${NODUS_HTTPS_PORT:-}" ]; then
-        args+=(--env "NODUS_HTTPS_PORT=${NODUS_HTTPS_PORT}")
+        require_free_lab_ports
     fi
     args+=("${jobs[@]}" "${passthrough[@]}")
 
