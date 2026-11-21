@@ -35,6 +35,14 @@ integration/scripts/seed.sh       # admin + ada + grace, their posts and follows
 integration/scripts/e2e.sh        # Playwright in the pinned container image
 ```
 
+`seed.sh` converges a lab that has already been used, it is not a one-shot
+fixture loader: it re-creates missing follows and posts, prunes statuses a spec
+left behind, and repairs the home timeline after an unfollow probe. A follow
+does not backfill old posts — fan-out happens only when a status is created — so
+the seed writes the missing `timeline_entry` rows directly, mirroring
+`fan_out_home`. That is the one place it bypasses the API. Rerunning it on a
+converged lab adds no accounts, statuses or timeline rows.
+
 CI runs those same checks locally, through nektos/act, because GitHub runner
 minutes are expensive: `integration/scripts/ci.sh all`. The workflow is
 `workflow_dispatch` only; see `docs/ci.md` for stages, prerequisites and what a

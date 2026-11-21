@@ -1,10 +1,11 @@
 #!/bin/bash
-# Creates the lab's demo data through the public HTTP API, not by writing SQL:
-# the admin comes from NODUS_BOOTSTRAP_*, the two ordinary accounts are
-# registered on /auth/register, and every token is obtained with the same PKCE
-# flow the browser client uses. Rerunning converges the lab to the seeded graph:
-# follows and posts that are already there are reported and left alone, and
-# statuses a previous spec run left behind are pruned (see prune-strays.sh).
+# Creates the lab's demo data through the public HTTP API: the admin comes from
+# NODUS_BOOTSTRAP_*, the two ordinary accounts are registered on /auth/register,
+# and every token is obtained with the same PKCE flow the browser client uses.
+# Rerunning converges the lab to the seeded graph: follows and posts that are
+# already there are reported and left alone, statuses a previous spec run left
+# behind are pruned (see prune-strays.sh), and the home timeline is repaired at
+# the end (the one direct database write; see `backfill_home`).
 set -euo pipefail
 
 SCRIPT_DIR=$(unset CDPATH; cd -- "$(dirname -- "$0")" && pwd)
@@ -185,6 +186,31 @@ post_status() {
 	printf '  posted: %s\n' "$text" >&2
 }
 
+# An unfollow purges a reader's timeline rows; re-following does not put them
+# back, because fan-out happens only on create
+# (`crates/store/src/statuses.rs:1262`). Mirror `fan_out_home`: every live
+# non-direct status of a seed account goes to its author and every accepted
+# follower (seed accounts are far below BIG_ACCOUNT_THRESHOLD). Direct SQL by
+# design: no API re-fans a status, so keep this in step with `fan_out_home` or
+# the seed will hide the next fan-out bug.
+backfill_home() {
+	compose exec -T postgres psql -U nodus -d nodus -q -v ON_ERROR_STOP=1 \
+		-v accounts="$(printf '%s\n' "$@" | paste -sd, -)" <<'SQL'
+WITH seeded AS (
+  SELECT id, account_id FROM status
+   WHERE account_id = ANY(string_to_array(:'accounts', ','))
+     AND deleted_at IS NULL AND visibility <> 'direct'
+)
+INSERT INTO timeline_entry (account_id, status_id, kind)
+SELECT account_id, id, 'home' FROM seeded
+UNION
+SELECT f.account_id, s.id, 'home' FROM seeded s JOIN follow f
+  ON f.target_account_id = s.account_id AND f.state = 'accepted'
+ON CONFLICT DO NOTHING;
+SQL
+	printf '  home timeline carries every seeded status\n' >&2
+}
+
 # The specs read ada's home timeline; ask first so a rerun adds no duplicate.
 follow() {
 	local token=$1 target=$2 label=$3 following
@@ -240,6 +266,9 @@ printf 'pruning statuses a previous spec run left behind ...\n'
 "$SCRIPT_DIR/prune-strays.sh" "$BASE" \
 	"$ADA_TOKEN:$ADA_ID" "$GRACE_TOKEN:$GRACE_ID" "$ADMIN_TOKEN:$ADMIN_ID" \
 	-- "${SEED_POSTS[@]}"
+
+printf 'restoring the home timeline ...\n'
+backfill_home "$ADA_ID" "$GRACE_ID" "$ADMIN_ID"
 
 printf '\nseeded accounts (%s)\n' "$BASE"
 printf '  %-10s %-22s %s\n' USER EMAIL PASSWORD
