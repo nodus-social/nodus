@@ -99,11 +99,18 @@ pulls and a full cargo compile.
   the dispatched run still restores and saves the cache while a local run skips
   it. The trade-off is that the dispatched run becomes the only place the cache
   key and the restore path are exercised, so a broken key or a broken restore
-  would not be caught locally. The same split stops the job at its later
-  `actions/setup-node@v4` step, which that image cannot run either; it is left
-  unguarded on purpose, because it installs the node and npm that the
-  `cargo check` step needs (`web-client/build.rs` panics without npm), so
-  skipping it locally would trade a clear error for a confusing one.
+  would not be caught locally. The same split stopped the job at its later
+  `actions/setup-node@v4` step, which that image cannot run either. That step is
+  now guarded the same way, with an act-only `curl`-and-`apt` step after it
+  installing node 22 from NodeSource inside the container (bookworm's own
+  `nodejs` is 18, below `@tailwindcss/oxide` 4.x's `>= 20`), so local runs get
+  the npm that `web-client/build.rs` panics without. The consequence: node
+  comes from NodeSource under act and from the tool cache on GitHub, so a
+  problem with the tool-cache key or a pinned version on GitHub is still only
+  caught by a dispatched run. This was the second JS-action escape, so the rule
+  is now explicit: **any JavaScript action in a job whose `container:` ships no
+  node must carry an `if: ${{ env.ACT }}` branch that provides it**, or the job
+  needs an image with node in it.
 - **Service containers** are act's implementation, not GitHub's; health checks
   and DNS can behave differently.
 - **The `cargo metadata --locked --offline` advisory step fails under act**,

@@ -153,11 +153,28 @@ jobs:
         working-directory: nodus-backend
         run: cargo test --workspace
 
+      # Node for this job comes from two mutually exclusive branches. On
+      # GitHub, actions/setup-node installs it on the runner host. Under act,
+      # a JavaScript action runs inside the job container (`rust:1-bookworm`,
+      # which ships no node), so setup-node itself cannot start there; the
+      # plain shell step below installs the same major inside the container so
+      # the exact job can be exercised locally.
       - uses: actions/setup-node@v4
+        if: ${{ !env.ACT }}
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: web/package-lock.json
+
+      - name: node 22 inside the job container (act only)
+        # Bookworm's own `nodejs` package is 18, below `@tailwindcss/oxide`
+        # 4.x's `>= 20` engine floor, so the Tailwind build would fail later
+        # with a confusing engine error. NodeSource's script provides 22.
+        if: ${{ env.ACT }}
+        run: |
+          curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+          apt-get install -y nodejs
+          node --version && npm --version
 
       - name: cargo check the web and sdk workspaces
         # `cargo test --workspace` above only compiles nodus-backend, so a
