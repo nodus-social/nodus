@@ -239,14 +239,28 @@ services:
     container_name: nodus-lab-web
     restart: unless-stopped
     command: ["nodus-web-server"]
+    # `local_read` (crates/web-server/src/public_api.rs) answers an anonymous
+    # permalink from this origin's own store by fetching
+    # `https://<instance host>/api/v1/...` with the SSRF-hardened client. That
+    # name resolves to a private address inside the lab and is signed by Caddy's
+    # internal CA, so the shell needs the same two things every server role has
+    # (x-nodus-service): the instance host it answers as, which is also what
+    # trusts the private address (validate.rs, `configured_trusted_private_hosts`),
+    # and the lab root appended to the image's store. Without them the self-read
+    # is refused and the proxy falls back to the peer, which is the 502.
+    entrypoint: ["/usr/bin/tini", "--", "/opt/nodus/bin/lab-ca-entrypoint.sh"]
     environment:
       # The shell reads no instance config: it renders pages and proxies session
       # state. NODUS_SESSIONS lives on the shared volume so a restart keeps it.
       NODUS_LISTEN: 0.0.0.0:3000
       NODUS_ASSET_DIR: /srv/nodus
       NODUS_SESSIONS: /var/lib/nodus/sessions.json
+      NODUS_INSTANCE_HOST: ${NODUS_DOMAIN:-nodus.test}
+      SSL_CERT_FILE: /tmp/nodus-lab-ca-bundle.crt
     volumes:
       - nodus-data:/var/lib/nodus
+      - ./state/ca/nodus-lab-ca.crt:/certs/nodus-lab-ca.crt:ro
+      - ./peers/ca/nodus-ca-entrypoint.sh:/opt/nodus/bin/lab-ca-entrypoint.sh:ro
     depends_on:
       nodus-api:
         condition: service_healthy
