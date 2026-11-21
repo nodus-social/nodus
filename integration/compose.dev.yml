@@ -1,0 +1,23 @@
+# Host-published infrastructure for the development loop.
+#
+# The lab deliberately publishes no database ports: a full stack reaches
+# Postgres and Valkey by service name on `nodus-lab`. A host process needs a
+# loopback port instead, so `scripts/dev.sh infra` layers this file on top of
+# compose.yml and starts only these two services.
+#
+#   docker compose -p nodus-lab -f integration/compose.yml \
+#     -f integration/compose.dev.yml up -d --wait postgres valkey
+#
+# Both ports bind to 127.0.0.1 and are distinct from every port the lab or the
+# host's other clusters use: 5432 belongs to nodus-postgres-1, 6379 to nothing,
+# 6390 to nodus-valkey-tests.
+name: nodus-lab
+
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:${NODUS_DEV_DB_PORT:-55432}:5432"
+
+  valkey:
+    ports:
+      - "127.0.0.1:${NODUS_DEV_VALKEY_PORT:-56379}:6379"

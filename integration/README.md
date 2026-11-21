@@ -6,19 +6,23 @@ Postgres and Valkey. Everything runs over plain HTTP, the database lives in a
 named volume, and `scripts/reset.sh` throws the whole thing away.
 
 The point is a deployed artifact to test against — the same binaries and the
-same `dist/` the images carry, built from the commits the superproject records —
-not a `cargo run` on the host.
+same `dist/` the images carry, built from the commits the superproject records.
+For day-to-day work, `scripts/dev.sh` runs the code on the host against the
+lab's Postgres and Valkey while the infrastructure stays in containers; see
+`docs/dev-loop.md`. The two loops share one database volume.
 
 ```text
 integration/
   compose.yml            the single-origin stack (project name `nodus-lab`)
+  compose.dev.yml        publishes Postgres/Valkey on loopback for the host loop
   compose.peers.yml      federation peers, added by the peers task
   Dockerfile.server      the six nodus binaries
   Dockerfile.web         the trunk bundle + the SSR host (+ Caddy binary)
   Caddyfile              route ownership for the whole origin
   initdb/00-nodus.sh     the `nodus` role, database and extensions
   .env.example           every knob, no secrets
-  scripts/               build, up, down, reset, seed, e2e, ci
+  scripts/               build, up, down, reset, seed, e2e, ci, dev
+  docs/dev-loop.md       host loop vs full stack, timings, traps
   e2e/                   Playwright specs and baselines; run via scripts/e2e.sh
 ```
 
