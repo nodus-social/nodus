@@ -363,8 +363,8 @@ no remote account stored, so `integration/e2e/tests/federation.spec.mjs` and
 `federation-visual.spec.mjs` skip themselves with that reason instead of
 passing or failing, and their rows are missing from a peer-free run. The guard
 probes the origin's store rather than an environment variable, so `peers.sh up`
-restores them without anyone flipping a flag; CI's `workflow_dispatch` input
-`peers: true` does that before the suite runs.
+restores them without anyone flipping a flag. Any run meant to cover federation
+must bring the peers up before the suite; the default CI job does not.
 
 Reachability, from the origin's own container:
 

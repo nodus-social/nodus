@@ -199,8 +199,8 @@ Two specs depend on the federation peers: `tests/federation.spec.mjs` and
 `tests/federation-visual.spec.mjs` assert a status the Mastodon peer delivered.
 A run that starts only the origin (CI's default `up.sh` + `seed.sh`) stores no
 remote account, so both skip themselves with that reason and the suite runs 6
-rows fewer; after `integration/scripts/peers.sh up` they run. CI's
-`workflow_dispatch` input `peers: true` brings the peers up first.
+rows fewer; after `integration/scripts/peers.sh up` they run. Bring the peers up
+before the suite in any run that is meant to cover federation.
 
 Baselines live next to the specs (`tests/*-snapshots/*-linux.png`) and are
 committed. Regenerate them deliberately, with the stack up and seeded:
