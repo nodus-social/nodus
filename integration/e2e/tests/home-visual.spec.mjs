@@ -6,6 +6,7 @@ import { expect, test } from '@playwright/test';
 
 import { ACCOUNTS, POSTS } from '../fixtures.mjs';
 import { signIn } from '../helpers/session.mjs';
+import { volatileMasks } from '../helpers/visual.mjs';
 
 test('home timeline', async ({ page }) => {
   await signIn(page, ACCOUNTS.ada);
@@ -14,6 +15,6 @@ test('home timeline', async ({ page }) => {
 
   await expect(page).toHaveScreenshot('home-timeline.png', {
     fullPage: true,
-    mask: [page.locator('time'), page.locator('[datetime]')],
+    mask: volatileMasks(page),
   });
 });

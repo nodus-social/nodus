@@ -7,8 +7,8 @@
   "scripts": {
     "test": "playwright test",
     "test:update": "playwright test --update-snapshots",
-    "test:functional": "playwright test tests/home.spec.mjs tests/profile.spec.mjs",
-    "test:visual": "playwright test tests/login-visual.spec.mjs tests/home-visual.spec.mjs"
+    "test:functional": "playwright test tests/home.spec.mjs tests/profile.spec.mjs tests/statuses.spec.mjs tests/timelines.spec.mjs tests/drive.spec.mjs tests/search.spec.mjs tests/notifications.spec.mjs tests/moderation.spec.mjs tests/session.spec.mjs",
+    "test:visual": "playwright test tests/login-visual.spec.mjs tests/home-visual.spec.mjs tests/composer-visual.spec.mjs tests/status-visual.spec.mjs tests/drive-visual.spec.mjs tests/search-visual.spec.mjs tests/notifications-visual.spec.mjs tests/moderation-visual.spec.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.65.0"
