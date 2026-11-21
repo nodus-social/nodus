@@ -1,0 +1,45 @@
+# Misskey 2024.11.0 configuration for the lab.
+#
+# Mounted at /misskey/.config (the image's default config directory) read
+# only. Credentials come from the environment (DATABASE_*), not from this
+# file, so nothing secret is committed.
+#
+# `url` is both the identity Misskey federates as and the absolute base for
+# links it serves. The published host port is part of it so that a developer
+# with `127.0.0.1 misskey.local` in /etc/hosts can open the UI, and the
+# container listens on the same port inside nodus-lab so peers dereference
+# the same URLs without a proxy.
+url: http://misskey.local:18082/
+port: 18082
+
+# Stock PostgreSQL 15+: Misskey 2024.11 does not use pg_roaringbitmap.
+db:
+  host: misskey-db
+  port: 5432
+
+redis:
+  host: misskey-redis
+  port: 6379
+
+# Only consulted while the instance has no real user: the first
+# /api/admin/accounts/create call must present it. scripts/peers.sh uses it to
+# create the root account and then never needs it again.
+setupPassword: misskey-lab-setup
+
+# Matches the upstream docker example; changing it after the first note is
+# written corrupts ordering.
+id: aidx
+
+# Off: checking the signer's inbox reachability fails for private peers and is
+# not needed on a trusted lab network.
+signToActivityPubGet: false
+
+# Plain HTTP peers must not emit HSTS for a .local origin.
+disableHsts: true
+
+# Docker bridge ranges. Misskey otherwise refuses to dereference actors that
+# live on private addresses.
+allowedPrivateNetworks:
+  - 10.0.0.0/8
+  - 172.16.0.0/12
+  - 192.168.0.0/16

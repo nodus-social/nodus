@@ -231,15 +231,30 @@ Notable knobs (all documented inline in `.env.example`):
 
 ## Federation peers
 
-`compose.peers.yml` is the override the peers task fills in:
+`compose.peers.yml` adds two real fediverse servers to the lab — Mastodon
+4.3.6 on `http://127.0.0.1:18081` and Misskey 2024.11 on
+`http://127.0.0.1:18082` — each with its own database and cache. It joins the
+existing `nodus-lab` network (declared `external: true`), keeps container names
+prefixed `nodus-lab-`, and relies on the origin being reachable as
+`http://nodus:8080` inside that network. Peers must not publish 8080 or 5432.
+
+Use the script, not raw compose: it fills the peer secrets in `.env` and runs
+the setup and seeding steps in order.
 
 ```sh
-docker compose -f integration/compose.yml -f integration/compose.peers.yml up -d
+integration/scripts/peers.sh up      # start, generate secrets, wait for health
+integration/scripts/peers.sh seed    # alice@mastodon.local, alice@misskey.local
+integration/scripts/peers.sh status
+integration/scripts/peers.sh follow  # the federation directions
+integration/scripts/peers.sh down    # stop, keep peer data
 ```
 
-It joins the existing `nodus-lab` network (declared `external: true`), keeps
-container names prefixed `nodus-lab-`, and relies on the origin being reachable
-as `http://nodus:8080` inside that network. Peers must not publish 8080 or 5432.
+Seeded credentials and API tokens land in `integration/state/*-account.json`
+(git-ignored) and survive `down.sh` + `up.sh`; `reset.sh` drops the peer
+volumes and the accounts with them. `docs/peers.md` covers the topology, the
+trust decisions, what a browser needs for the peer UIs, the Sidekiq
+`letter_opener` initializer, and the origin-side blocker that keeps the
+follow-direction proofs from running today.
 
 ## What works today
 
