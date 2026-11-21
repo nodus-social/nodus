@@ -351,6 +351,16 @@ nodus_token() {
         jq -r '.token // empty' "$STATE_DIR/nodus-account.json" 2>/dev/null
 }
 
+# A token minted before a reset points at a row the dropped database no longer
+# has, and every follow check would answer 401. The file cannot be trusted by
+# existence alone, so it is verified the same way the API verifies it.
+nodus_token_works() {
+    local token
+    token=$(nodus_token)
+    [ -n "$token" ] || return 1
+    [ "$(nodus_api GET /api/v1/accounts/verify_credentials "$token" | json_code)" = 200 ]
+}
+
 seed_nodus_token() {
     local token
     token=$(nodus_login_token ada@nodus.test lab-password-ada) || {
@@ -597,7 +607,7 @@ cmd_seed() {
     require_peers_up
     seed_mastodon
     seed_misskey
-    if [ -z "$(nodus_token)" ]; then
+    if ! nodus_token_works; then
         seed_nodus_token || printf 'warning: Nodus token not seeded\n' >&2
     fi
 }
