@@ -116,11 +116,45 @@ jobs:
             ${{ hashFiles('nodus-backend/Cargo.lock',
             'server-sdk/crates/*/Cargo.toml', 'sdk/**/Cargo.toml') }}
 
+      - name: give the test database the extensions a deployment installs
+        # The service container creates an empty database; a real deployment
+        # installs these. deploy/docker/entrypoint.sh and
+        # integration/initdb/00-nodus.sh both run the statements below. They
+        # matter because each test migrates into its own schema: `CREATE
+        # EXTENSION IF NOT EXISTS` in migration 0000 succeeds once, in the
+        # first test's schema, then is a no-op for every schema after it. Six
+        # of seven tests failed with 42704 "type citext does not exist" (CI
+        # run 44868871514). Installed in `public`, which every test's
+        # search_path includes, the types resolve for all of them: the shape
+        # a deployment has.
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends postgresql-client
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE EXTENSION IF NOT EXISTS citext;
+          CREATE EXTENSION IF NOT EXISTS pg_trgm;
+          SQL
+
       - name: cargo test --workspace
         # The container is bookworm, so the deploy-only paths compile; there is
         # nothing to exclude. Keep it that way: a workspace-wide green run.
         working-directory: nodus-backend
         run: cargo test --workspace
+
+      - name: cargo check the web and sdk workspaces
+        # `cargo test --workspace` above only compiles nodus-backend, so a
+        # broken SSR binary (nodus-web-server) or SDK crate reached the lab
+        # job as an image build failure instead of failing here. The web
+        # check is split by target: the browser crate cannot compile for the
+        # host and the server cannot compile for wasm. rust-toolchain.toml
+        # lists wasm32, but the image build installs the target explicitly,
+        # so do the same rather than rely on rustup's handling of the file.
+        run: |
+          (cd sdk && cargo check --workspace)
+          (cd web && cargo check --workspace --exclude nodus-web-client)
+          rustup target add wasm32-unknown-unknown
+          (cd web && cargo check -p nodus-web-client \
+            --target wasm32-unknown-unknown)
 
   lab:
     name: lab
