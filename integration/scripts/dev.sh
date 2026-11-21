@@ -313,6 +313,7 @@ run_web() {
         esac
     done
     WHAT_COMMAND="web"
+    require_infra
     require_port_free "$WEB_PORT" "web" "NODUS_DEV_WEB_PORT"
     trunk=$(find_trunk)
     cd "$REPO_DIR/web"
