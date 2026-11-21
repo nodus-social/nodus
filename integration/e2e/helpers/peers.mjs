@@ -7,7 +7,7 @@
 
 import { test } from '@playwright/test';
 
-import { findStoredAccount } from './api.mjs';
+import { accountStatuses, findStoredAccount } from './api.mjs';
 
 // The acct the origin stores for the Mastodon peer.
 export const PEER_ACCT = 'alice@mastodon.test';
@@ -21,4 +21,20 @@ export async function requirePeerAccount(request, session) {
   const peer = await findStoredAccount(request, session, PEER_ACCT);
   test.skip(peer === null, PEER_SKIP_REASON);
   return peer;
+}
+
+/// The peer-authored status whose body carries `text`, or a skip naming the
+/// step that would deliver one. The posts arrive with the follow
+/// (integration/scripts/peers.sh follow), so an origin that has the account
+/// but no post is a half-run lab rather than a product failure. Matching the
+/// body keeps the spec on the post it asserts when the peer writes more.
+export async function requirePeerStatus(request, session, text) {
+  const peer = await requirePeerAccount(request, session);
+  const statuses = await accountStatuses(request, session, peer.id);
+  const status = statuses.find((stored) => stored.content.includes(text));
+  test.skip(
+    status === undefined,
+    'no peer-authored status is stored; run integration/scripts/peers.sh follow',
+  );
+  return status;
 }

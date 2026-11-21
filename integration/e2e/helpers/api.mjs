@@ -81,6 +81,18 @@ export async function findStoredAccount(request, session, acct) {
   return response.json();
 }
 
+/// GET /api/v1/accounts/{id}/statuses. The federation specs read a remote
+/// account's posts from here: the public proxy is the surface under test, so
+/// arranging their data must not depend on it.
+export async function accountStatuses(request, session, accountId, limit = 20) {
+  const response = await request.get(
+    `${API_BASE}/api/v1/accounts/${accountId}/statuses?limit=${limit}`,
+    { headers: authHeaders(session) },
+  );
+  await expectOk(response, `GET /api/v1/accounts/${accountId}/statuses`);
+  return response.json();
+}
+
 export async function clearNotifications(request, session) {
   const response = await request.post(`${API_BASE}/api/v1/notifications/clear`, {
     headers: authHeaders(session),

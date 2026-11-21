@@ -1,22 +1,36 @@
-// Functional: federation proof (d). A post authored on the Mastodon peer is
-// stored by this origin and rendered through the lab shell's own search screen,
-// with the federated handle and the peer's text in the DOM. The federated
-// timeline would be the natural surface, but the client's Federated request
-// omits `local=false`, so the API answers with local posts only; the search
-// screen reads the same stored statuses and paints them through the same card.
+// Functional: federation as a reader meets it. A post authored on the Mastodon
+// peer is stored by this origin (proof (d)) and has to be readable on the three
+// surfaces a reader would reach: the federated timeline, the author's profile,
+// and the post's own permalink.
 //
-// Needs the peers; without them the test skips with that reason (helpers/peers.mjs).
+// The first test states what already works — the card in search. The three
+// below it state the screens a reader reaches from that card by what is on
+// them, not by the status code behind them: the code the broken paths answer
+// today (502 from the public proxy) is a symptom, and a spec pinned to it
+// would have to be rewritten once the data path is fixed. Two of them fail at
+// this build on purpose (integration/docs/e2e-gaps.md records each cause and
+// owner); the profile resolves through this origin's own store and passes.
+//
+// Needs the peers; without them the tests skip with that reason, and an origin
+// that stored the peer account but no post skips naming the follow that
+// delivers one (helpers/peers.mjs).
 
 import { expect, test } from '@playwright/test';
 
 import { ACCOUNTS } from '../fixtures.mjs';
 import { navigate } from '../helpers/navigation.mjs';
-import { PEER_ACCT, requirePeerAccount } from '../helpers/peers.mjs';
+import { PEER_ACCT, requirePeerAccount, requirePeerStatus } from '../helpers/peers.mjs';
 import { signIn } from '../helpers/session.mjs';
 
-// The newest post the peer's Create activity delivered, asserted through the
-// API first so a failure says whether the data or the paint went missing.
+// The post the peer's Create activity delivered, asserted through the API
+// first so a failure says whether the data or the paint went missing.
 const PEER_POST = 'hello from mastodon, follows are live';
+
+const [PEER_NAME, PEER_HOST] = PEER_ACCT.split('@');
+
+// The address the shell itself draws for a remote author:
+// /accounts/{host}/{name}, the form handles.rs' profile_path_for returns.
+const PEER_PROFILE = `/accounts/${PEER_HOST}/${PEER_NAME}`;
 
 test('a peer-authored post renders through the lab shell', async ({ page }) => {
   const session = await signIn(page, ACCOUNTS.ada);
@@ -32,4 +46,48 @@ test('a peer-authored post renders through the lab shell', async ({ page }) => {
   // The status header prints acct verbatim; the leading @ is the reader's.
   await expect(card.locator('header')).toContainText(PEER_ACCT);
   await expect(card).toContainText(PEER_POST);
+});
+
+// Gap: the client asks for the federated stream without `local=false`, so the
+// API answers with local posts only (e2e-gaps.md, owner: sdk).
+test('the federated timeline shows a peer-authored post', async ({ page }) => {
+  const session = await signIn(page, ACCOUNTS.ada);
+  const status = await requirePeerStatus(page.request, session, PEER_POST);
+  expect(status.account.acct, 'the stored status is the peer\'s').toBe(PEER_ACCT);
+
+  await navigate(page, '/home/federated');
+
+  const card = page.locator('li.card').filter({ hasText: PEER_POST }).first();
+  await expect(card).toBeVisible();
+  await expect(card.locator('header')).toContainText(PEER_ACCT);
+});
+
+// Resolved through this origin's own store (search, then the local id), so the
+// screen renders the account and its posts; the public proxy that 502s is only
+// the fallback for a handle this origin has never stored.
+test('a remote profile lists the account\'s posts', async ({ page }) => {
+  const session = await signIn(page, ACCOUNTS.ada);
+  await requirePeerStatus(page.request, session, PEER_POST);
+
+  await navigate(page, PEER_PROFILE);
+
+  const post = page.locator('li.card').filter({ hasText: PEER_POST }).first();
+  await expect(post).toBeVisible();
+});
+
+// Gap: the permalink read proxies to the peer by address, and the lab's peer
+// resolves to a non-public IP, so the screen reports a failed read
+// (e2e-gaps.md, owner: web-server public-api proxy).
+test('a remote post renders at its permalink', async ({ page }) => {
+  const session = await signIn(page, ACCOUNTS.ada);
+  const status = await requirePeerStatus(page.request, session, PEER_POST);
+
+  // `/status/{host}/{id}` is the shareable form; the peer's own address for the
+  // post names both, and the id is the last segment of it.
+  const address = new URL(status.url);
+  const id = address.pathname.split('/').filter(Boolean).pop();
+
+  await navigate(page, `/status/${address.host}/${id}`);
+
+  await expect(page.getByText(PEER_POST).first()).toBeVisible();
 });
