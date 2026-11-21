@@ -31,33 +31,65 @@ pinned client needed no change. Covered by `tests/federation.spec.mjs`
 `server`, same `b02cb4b` window). Covered by
 `tests/federation.spec.mjs` (`a remote profile lists the account's posts`).
 
-## `statuses_count` is 0 in the API row for a remote account
+## Closed: `statuses_count` was 0 in the API row for a remote account
 
-Still open, and narrower than the entry this replaces: the profile's Posts tab
-renders the statuses, but the account row `statuses_count` is 0 for a remote
-account (`/api/v1/accounts/01m7yznagw96czhm7tzaqyk8w6`), so any screen that
-trusts the number shows `0 posts`. Owner: `server` accounts API — the counter is
-never recomputed on delivery.
+The stored counter is maintained now (owner: `server` store, `a4e0281`).
+`statuses::upsert_remote` takes the same `UPDATE account SET statuses_count =
+statuses_count + 1` that `statuses::create` makes for a local author, and only
+when the uri was not already in the transaction, so a re-delivery or an edit is
+not a second post; `delete_remote` and `delete_remote_actor` take the rows back
+out, mirroring `delete_owned`. Measured in the lab at
+`/api/v1/accounts/01m7yznagw96czhm7tzaqyk8w6` (`alice@mastodon.test`), the
+account row against the length of `/api/v1/accounts/{id}/statuses`, before one
+more delivery, after it, and after the peer deleted that status again:
 
-## A remote post's permalink is readable only without a session
+```
+before          count=0  list=1
+after delivery  count=1  list=2   (01m7zvcx6aess9p66cv3enaqmf)
+after delete    count=0  list=1
+```
+
+The pair moves together in both directions. The residual `0` against `1` is the
+row this lab stored before the fix (12:01 that day; `a4e0281` landed 20:43):
+the counter moves with the insert that follows it, and nothing backfills rows
+already stored, so an instance upgraded with peer rows keeps the old number
+until each of those rows is re-inserted. A fresh database — what the CI lab
+starts from — counts from the first delivery.
+
+Known limitation, deliberate: a stored counter counts a status from a paused
+domain while the profile list hides it. `account_page`
+(`crates/store/src/statuses.rs`) filters the live rows on `domain_pause`,
+`quarantined_at` and remote moderation, and `statuses_count` does not, because
+the counter is the stored fact of what this instance holds for the author, not
+the answer to "what may this reader see". It is the same split as a local
+private post: it counts toward its author's `statuses_count` while the outbox
+does not list it.
+
+## Closed: a remote post's permalink answered only a signed-out reader
 
 `/status/mastodon.test/{id}` is the form the shell paints (`rows.rs`
-`status_path(Some(&host), &inner.id)`) and it carries the id THIS origin minted.
-Two halves, two states:
+`status_path(Some(&host), &inner.id)`) and it carries the id THIS origin minted,
+so no peer can answer for it. Both halves read the stored row now (owner:
+`web-server` public-api proxy, `63a3777` for the anonymous read, `ff8afbb` for
+the signed-in one). `public_api::status` asks `local_read` before
+`status_target` for every reader; the token no longer decides whether this
+origin's own copy may answer, and the relay is reached only for an id this
+origin never stored. `answers_for` still decides which host a row may answer
+under, so a local row cannot answer under a peer's name. A profile keeps the
+sign-in gate (`Read::Profile`, `8fbabee`) on purpose: a signed-in reader's home
+instance resolves a profile by url and holds their relationship state.
 
-- Anonymous: `web-server` `63a3777` reads the origin's own stored row before the
-  peer (`public_api.rs` `local_read`, guarded by `token.is_none()`), so the
-  painted link renders. Covered by `tests/federation.spec.mjs`
-  (`an anonymous reader opens a remote post by the id this origin minted`).
-  It needs the lab wiring in `integration/compose.yml` (`nodus-web` gets
-  `NODUS_INSTANCE_HOST` and the lab CA), otherwise the self-read is refused as a
-  non-public host.
-- Signed in: the browser sends a token, `local_read` is skipped, and the proxy
-  relays the peer's own id to `https://mastodon.test`, which inside the lab is a
-  private address the SSRF guard refuses — `The instance could not be reached:
-  HTTP 502`. Owner: `web-server` public-api proxy (whether a signed-in read of a
-  peer's own id should also consult the stored row, or the lab should front the
-  peers on a name the guard trusts).
+Covered by `tests/federation.spec.mjs` (`an anonymous reader opens a remote post
+by the id this origin minted` and `a signed-in reader opens a remote post by the
+id this origin minted`, the second one green in all three projects). The
+anonymous read needs the lab wiring in `integration/compose.yml` (`nodus-web`
+gets `NODUS_INSTANCE_HOST` and the lab CA), otherwise the self-read is refused
+as a non-public host.
+
+An id this origin does not hold still fails honestly: measured against the lab
+at `https://nodus.test/public-api/status/mastodon.test/01m8zzzzzzzzzzzzzzzzzzzzzb`,
+signed in and signed out alike, `HTTP 404 {"error":"Not Found"}` — the peer's
+own answer, reached through the relay. No manufactured 200.
 
 ## Re-authenticating after a reload stops on the consent page
 
