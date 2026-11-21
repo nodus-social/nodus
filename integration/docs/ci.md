@@ -37,6 +37,19 @@ integration/scripts/ci.sh down                 # stop Docker-in-Docker
   `sudo chown -R`;
 - `DOCKER_HOST=tcp://127.0.0.1:2375` — so the `lab` job's `docker build` and
   `docker compose` use the dind daemon instead of the host's socket;
+- `CARGO_HOME=integration/.act/cargo-home` — cargo would otherwise keep its
+  registry and git checkouts in the image's `/usr/local/cargo`, which dies with
+  the job container. The path is on the `--bind` mount, so the next `rust-tests`
+  run reuses the crates the first one downloaded (466 of them on this
+  checkout) instead of fetching them again. `target/` needs no help: the bind
+  puts the checkout at its own host path, so the container compiles into the
+  same 174 GB `nodus-backend/target` a host `cargo test` uses. This is a local
+  stand-in for `Swatinem/rust-cache`, not the same mechanism: `ci.yml` skips
+  that action under act (`if: ${{ !env.ACT }}`, because `rust:1-bookworm` ships
+  no node), and act's cache server only serves JavaScript actions, so there is
+  no GitHub cache to restore or key to share. It also replaces the named-volume
+  idea: this act build ignores `--container-options` for a job that sets
+  `container:`, which is every `rust-tests` container.
 - the dind container itself is started with `-v "$REPO_DIR:$REPO_DIR"` — the
   repository at its own absolute path, writable. `--bind` gives the *client*
   the checkout at that path, but the *daemon* is a separate filesystem, so a
@@ -122,8 +135,13 @@ pulls and a full cargo compile.
 - **`actions/*` are fetched at run time**, not pinned by SHA in the workflow;
   act may resolve a newer release than the runner would, or vice versa.
 - **Caches are not GitHub's.** `actions/cache`, `Swatinem/rust-cache` and
-  `actions/setup-node` caches either miss or are per-run. Timings and cold-path
-  failures differ; a cold local run is the closer analogue.
+  `actions/setup-node` caches either miss or are per-run. The `rust-tests` job
+  skips `rust-cache` entirely under act (`!env.ACT`), so a local run restores
+  nothing from GitHub; it reuses `CARGO_HOME=integration/.act/cargo-home` and
+  the bind-mounted `target/` from the previous local run instead. Those are
+  local, not keyed like GitHub's cache: a local warm run says nothing about
+  whether the dispatched run's restore key hits. A cold local run is still the
+  closer analogue of a GitHub miss.
 - **A JavaScript action runs in a different place.** GitHub executes a JS
   action on the runner host, which has node; act executes it inside the job
   container with `docker exec node …`. The runner-image jobs (`preflight`,

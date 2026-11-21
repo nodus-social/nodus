@@ -47,6 +47,18 @@ REPO_DIR=$(
 WORKFLOW="$REPO_DIR/.github/workflows/ci.yml"
 LOG_DIR="$REPO_DIR/integration/.act"
 
+# Cargo's registry and git checkouts live in the image's /usr/local/cargo and
+# die with the job container; only target/ survives, because --bind mounts the
+# checkout at its own host path. Point CARGO_HOME into that bind instead, so a
+# second rust-tests run reuses the 466 crates the first one downloaded. This is
+# the local substitute for Swatinem/rust-cache: ci.yml guards that action with
+# `!env.ACT` (rust:1-bookworm has no node), and act's cache server only serves
+# JavaScript actions, so there is no GitHub-shaped cache to restore under act.
+# A named volume would be the other lever, but act 0.2.98 ignores
+# --container-options for a job that sets `container:`, so it cannot reach
+# rust-tests' container.
+ACT_CARGO_HOME=${ACT_CARGO_HOME:-$LOG_DIR/cargo-home}
+
 ACT_VERSION=${ACT_VERSION:-0.2.98}
 ACT_IMAGE=${ACT_IMAGE:-catthehacker/ubuntu:act-24.04}
 ACT_DIND_IMAGE=${ACT_DIND_IMAGE:-docker:dind}
@@ -279,7 +291,9 @@ run_act() {
         # same target/ a local `cargo test` uses, so the compile is shared.
         --bind
         --env "DOCKER_HOST=${DIND_HOST}"
+        --env "CARGO_HOME=${ACT_CARGO_HOME}"
     )
+    mkdir -p "$ACT_CARGO_HOME"
     # The lab job's nested docker and published ports need the host network
     # (dind is `--network host` too). The rust-tests service container is reached
     # as `postgres:5432`, which only resolves on act's own bridge network, so do
