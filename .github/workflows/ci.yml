@@ -310,7 +310,13 @@ jobs:
             > lab-logs.txt || true
 
       - name: upload reports
-        if: always()
+        # act cannot serve GitHub's artifact service: the action fails with
+        # `::error::Unable to get the ACTIONS_RUNTIME_TOKEN env variable`, and
+        # because it runs `always()` that error turned every otherwise green
+        # local `lab` red. act exports ACT=true, GitHub leaves it unset, so a
+        # dispatched run still uploads the reports while a local run skips the
+        # step and reads them from the working tree (ci.sh prints where).
+        if: ${{ !env.ACT && always() }}
         uses: actions/upload-artifact@v4
         with:
           name: lab-reports

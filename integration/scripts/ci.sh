@@ -285,11 +285,18 @@ run_act() {
     # as `postgres:5432`, which only resolves on act's own bridge network, so do
     # not force host networking for a job that does not need it.
     local host_network=0
+    # The lab job is the only one that produces reports, so only a run that
+    # includes it has anything to say about the skipped artifact step.
+    local lab_selected=0
     if [ "${#jobs[@]}" -eq 0 ]; then
         host_network=1
+        lab_selected=1
     else
         for candidate in "${jobs[@]}"; do
-            [ "$candidate" = lab ] && host_network=1
+            if [ "$candidate" = lab ]; then
+                host_network=1
+                lab_selected=1
+            fi
         done
     fi
     if [ "$host_network" -eq 1 ]; then
@@ -316,6 +323,15 @@ run_act() {
     reclaim_workspace || printf 'ci.sh: reclaim failed; check ownership of %s\n' \
         "${RECLAIM_PATHS[*]}" >&2
     [ "$status" -eq 0 ] || printf 'act exited %s; see %s\n' "$status" "$log" >&2
+    if [ "$lab_selected" -eq 1 ]; then
+        # Say it rather than let the absent step pass in silence: `upload
+        # reports` is guarded with `!env.ACT` in the workflow, so no artifact
+        # was published from this run and the files it would have carried are
+        # only on disk here.
+        printf 'reports were not uploaded locally (act cannot serve the artifact service); they are on disk at %s and %s\n' \
+            "$REPO_DIR/integration/e2e/playwright-report" \
+            "$REPO_DIR/web/e2e/playwright-report"
+    fi
     return "$status"
 }
 

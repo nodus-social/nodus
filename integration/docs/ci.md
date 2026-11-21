@@ -158,13 +158,20 @@ pulls and a full cargo compile.
   GitHub's disk budget.
 - **Artifacts cannot be uploaded.** `actions/upload-artifact@v4` needs the
   `ACTIONS_RUNTIME_TOKEN` and the artifact service that only GitHub runs; under
-  act its step fails with
-  `❗ ::error::Unable to get the ACTIONS_RUNTIME_TOKEN env variable` — visible in
-  `integration/.act/run-lab.log` at the end of every `lab` run. It runs
-  `if: always()`, so it can flip an otherwise green job red locally. That is a
-  limitation of act, not of the workflow: do not silence the step to make a
-  local run green, and read the reports from the working tree instead
-  (`web/e2e/playwright-report`, `integration/e2e/playwright-report`).
+  act the step fails with
+  `❗ ::error::Unable to get the ACTIONS_RUNTIME_TOKEN env variable`. It runs
+  `if: always()`, so that failure used to flip an otherwise green `lab` red on
+  every local run, which made the job's colour useless as a signal. The step is
+  now `if: ${{ !env.ACT && always() }}`: act exports `ACT=true`, GitHub leaves
+  it unset, so a dispatched run still uploads `lab-reports` (on failure too)
+  and a local run skips the step. `lab` can therefore be fully green locally,
+  and the only difference from a dispatched run is that nothing was uploaded:
+  `ci.sh` prints, at the end of a run that included `lab`, that the reports
+  stayed on disk at `integration/e2e/playwright-report` and
+  `web/e2e/playwright-report`. `ci/gate` remains GitHub-only for the same
+  reason: it aggregates the `needs` results, and locally the `lab` result now
+  depends on a step (the upload) that only GitHub executes, so a local gate
+  green would be certifying a workflow shape the runner never runs.
 - **Secrets and variables** are whatever is exported in the shell. The workflow
   currently reads none.
 
