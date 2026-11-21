@@ -100,7 +100,7 @@ through `DOCKER_HOST` live in the dind volume.
 | docker daemon | act, dind and the lab's images |
 | ~10 GB free disk | `catthehacker/ubuntu:act-24.04`, `rust:1-bookworm`, `pgvector/pgvector:pg17`, the lab images, dind's layer cache |
 | network (first run) | act binary, runner image, node toolchain, Playwright/Chromium, crates |
-| `LAB_HTTP_PORT`, `LAB_HTTPS_PORT` | not environment knobs: the workflow's own `env:` (18090/18453), so the CI lab does not collide with a developer stack. Every consumer derives from them — the `point the lab at the CI port` step writes `NODUS_HTTP_PORT`/`NODUS_HTTPS_PORT` into `integration/.env`, `integration/scripts/e2e.sh` reads that file back, and `LAB_BASE_URL` is built from `LAB_HTTP_PORT`. Change them in `ci.yml` |
+| `LAB_HTTP_PORT`, `LAB_HTTPS_PORT` | not environment knobs: the workflow's own `env:` (18090/18453), so the CI lab does not collide with a developer stack. Every consumer derives from them — the `point the lab at the CI port` step writes `NODUS_HTTP_PORT`/`NODUS_HTTPS_PORT` into `integration/.env`, `integration/scripts/e2e.sh` reads that file back, and `LAB_BASE_URL` is built from `LAB_HTTP_PORT`. Change them in `ci.yml`. The step rewrites those two lines only: a local run keeps the `.env` its dind volumes were initialised from, because `up.sh`'s `ensure_env` generates the passwords on first use and the postgres volume outlives a run |
 
 ## Stages, what they need, rough duration
 

@@ -254,8 +254,19 @@ jobs:
         # `nodus.test:443` resolver rule, and playwright.config.mjs takes the
         # https one from LAB_HTTPS_PORT. Writing both here is what keeps the
         # browser, the Node-side requests and the published ports in step.
+        #
+        # Only rewrite the ports, never recreate the file. `up.sh`'s ensure_env
+        # generates the database/valkey/share secrets when they are still
+        # markers, and dind keeps `nodus-lab_postgres-data` between local runs,
+        # so regenerating them every run would send a new password at a volume
+        # that kept the old one: every service then dies with `password
+        # authentication failed for user "nodus"` and the stack never gets
+        # healthy. A dispatched run starts from a clean checkout, so the file is
+        # created from the example there.
         run: |
-          cp integration/.env.example integration/.env
+          if [ ! -f integration/.env ]; then
+            cp integration/.env.example integration/.env
+          fi
           sed -i "s/^NODUS_HTTP_PORT=.*/NODUS_HTTP_PORT=${LAB_HTTP_PORT}/" \
             integration/.env
           sed -i "s/^NODUS_HTTPS_PORT=.*/NODUS_HTTPS_PORT=${LAB_HTTPS_PORT}/" \
