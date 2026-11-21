@@ -143,7 +143,15 @@ services:
       - rails
       - server
       - -p
-      - "3000"
+      # Port 80, not 3000: Mastodon builds every actor, inbox and status URL
+      # from WEB_DOMAIN, which cannot carry a port, so the address it advertises
+      # to peers is http://mastodon.local/... . Serving the app on 80 inside the
+      # network makes that advertisement real; the origin posts a Follow to the
+      # shared inbox it was told about, and port 80 is where that lands. The
+      # image runs as uid 991 and docker already sets
+      # net.ipv4.ip_unprivileged_port_start=0, so binding 80 needs no
+      # capability.
+      - "80"
       - -b
       - 0.0.0.0
     environment: *mastodon-environment
@@ -153,11 +161,12 @@ services:
           - mastodon.local
     # Optional: the peer UI is not needed for federation. With this published,
     # a browser that maps `127.0.0.1 mastodon.local` can load
-    # http://mastodon.local:18081, but Mastodon's canonical URLs carry no port
-    # (WEB_DOMAIN=mastodon.local), so most links and assets still point at
-    # port 80. See docs/peers.md before trying to click around.
+    # http://mastodon.local:18081. Mastodon's canonical URLs still carry no
+    # port (WEB_DOMAIN=mastodon.local), so most links and assets point at
+    # port 80 on the host, which nothing serves. See docs/peers.md before
+    # trying to click around.
     ports:
-      - "127.0.0.1:18081:3000"
+      - "127.0.0.1:18081:80"
     volumes:
       - mastodon-system:/mastodon/public/system
       # The development bundle is absent from the image, but development mode
@@ -170,7 +179,7 @@ services:
       mastodon-redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS localhost:3000/health | grep -q OK"]
+      test: ["CMD-SHELL", "curl -fsS localhost/health | grep -q OK"]
       interval: 10s
       timeout: 5s
       retries: 30
@@ -264,6 +273,13 @@ services:
       # Misskey hardcodes https for webfinger unless this is set; the lab's
       # origin and peers are plain HTTP.
       MISSKEY_WEBFINGER_USE_HTTP: "true"
+      # `checkHttps` (packages/backend/src/misc/check-https.ts) refuses any
+      # ActivityPub id that is not https unless NODE_ENV is not "production":
+      #   return url.startsWith('https://') || (url.startsWith('http://') && process.env.NODE_ENV !== 'production')
+      # The lab's origin is http://nodus:8080, so a production-mode peer cannot
+      # dereference a single one of its notes. Development mode is the peer's
+      # own escape hatch and is lab-only; production peers keep the default.
+      NODE_ENV: development
     networks:
       default:
         aliases:

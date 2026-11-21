@@ -374,14 +374,19 @@ check_nodus_to_mastodon() {
         return 1
     fi
 
-    printf -- '-- resolve by handle\n'
-    search=$(nodus_api GET "/api/v2/search?q=alice%40mastodon.local&resolve=true" "$token")
+    printf -- '-- resolve by actor URL\n'
+    # The canonical actor URL, on port 80: Mastodon advertises its identity from
+    # WEB_DOMAIN, which cannot carry a port, and compose.peers.yml serves the
+    # peer on 80 inside the network. A bare handle makes the origin's WebFinger
+    # probe the same port-80 address, so the actor URL is the shorter path and
+    # is what the proof used.
+    search=$(nodus_api GET "/api/v2/search?q=http%3A%2F%2Fmastodon.local%2Fusers%2F$MASTODON_ACCOUNT&resolve=true" "$token")
     printf '%s\n' "$search"
     account_id=$(printf '%s' "$search" | json_body | jq -r '.accounts[0].id // empty')
 
     if [ -z "$account_id" ]; then
-        printf -- '-- resolve by actor URL\n'
-        search=$(nodus_api GET "/api/v2/search?q=http%3A%2F%2Fmastodon.local%2Fusers%2Falice&resolve=true" "$token")
+        printf -- '-- resolve by handle\n'
+        search=$(nodus_api GET "/api/v2/search?q=$MASTODON_ACCOUNT%40mastodon.local&resolve=true" "$token")
         printf '%s\n' "$search"
         account_id=$(printf '%s' "$search" | json_body | jq -r '.accounts[0].id // empty')
     fi
@@ -410,14 +415,18 @@ check_mastodon_to_nodus() {
     }
     token=$(jq -r .token "$STATE_DIR/mastodon-account.json")
 
-    printf -- '-- resolve by handle\n'
-    search=$(mastodon_api GET '/api/v2/search?q=%40ada%40nodus&resolve=true' "$token")
+    printf -- '-- resolve by actor URL\n'
+    # Mastodon's WebFinger builds `https://<domain>` for every domain that is not
+    # `.onion` (`app/lib/webfinger.rb`, `standard_url`), so `@ada@nodus` cannot be
+    # resolved without TLS on the origin. The actor URL goes straight to the
+    # resolver and never reaches WebFinger; the port is the origin's own :8080.
+    search=$(mastodon_api GET '/api/v2/search?q=http%3A%2F%2Fnodus%3A8080%2Fusers%2Fada&resolve=true&type=accounts' "$token")
     printf '%s\n' "$search"
     account_id=$(printf '%s' "$search" | json_body | jq -r '.accounts[0].id // empty')
 
     if [ -z "$account_id" ]; then
-        printf -- '-- resolve by actor URL\n'
-        search=$(mastodon_api GET '/api/v2/search?q=http%3A%2F%2Fnodus%3A8080%2Fusers%2Fada&resolve=true' "$token")
+        printf -- '-- resolve by handle\n'
+        search=$(mastodon_api GET '/api/v2/search?q=%40ada%40nodus&resolve=true' "$token")
         printf '%s\n' "$search"
         account_id=$(printf '%s' "$search" | json_body | jq -r '.accounts[0].id // empty')
     fi
@@ -443,21 +452,24 @@ check_misskey_to_nodus() {
         printf 'skipped: missing Misskey or Nodus token (run peers.sh seed)\n'
         return 1
     fi
-    local token user_id response note_uri note_id before after
+    local token user_id response note_id before after note_status note_address
     token=$(jq -r .token "$STATE_DIR/misskey-account.json")
 
-    printf -- '-- resolve by handle\n'
-    response=$(misskey_api users/show "$token" \
-        "$(jq -nc '{username: "ada", host: "nodus"}')")
+    printf -- '-- resolve by actor URL via ap/show\n'
+    # Misskey forces WebFinger to http (MISSKEY_WEBFINGER_USE_HTTP=true), but the
+    # domain it would dial is `nodus` with no port, and nothing answers on 80 of
+    # the origin. ap/show takes the actor URL the origin publishes, port and all.
+    response=$(misskey_api ap/show "$token" \
+        "$(jq -nc '{uri: "http://nodus:8080/users/ada"}')")
     printf '%s\n' "$response"
-    user_id=$(printf '%s' "$response" | json_body | jq -r '.id // empty')
+    user_id=$(printf '%s' "$response" | json_body | jq -r '.object.id // empty')
 
     if [ -z "$user_id" ]; then
-        printf -- '-- resolve by actor URL via ap/show\n'
-        response=$(misskey_api ap/show "$token" \
-            "$(jq -nc '{uri: "http://nodus:8080/users/ada"}')")
+        printf -- '-- resolve by handle\n'
+        response=$(misskey_api users/show "$token" \
+            "$(jq -nc '{username: "ada", host: "nodus"}')")
         printf '%s\n' "$response"
-        user_id=$(printf '%s' "$response" | json_body | jq -r '.object.id // empty')
+        user_id=$(printf '%s' "$response" | json_body | jq -r '.id // empty')
     fi
 
     [ -n "$user_id" ] || {
@@ -469,28 +481,31 @@ check_misskey_to_nodus() {
         "$(jq -nc --arg id "$user_id" '{userId: $id}')"
 
     printf -- '-- react to a nodus note\n'
-    note_uri=$(nodus_api GET '/api/v1/timelines/home?limit=1' "$(nodus_token)" |
-        json_body | jq -r '.[0].uri // empty')
-    printf 'nodus note uri: %s\n' "$note_uri"
-    [ -n "$note_uri" ] || return 1
+    # The note is dereferenced by its ActivityPub id, which is not the Mastodon-API
+    # `uri`: the origin serves `http://nodus:8080/@ada/<id>` as HTML even for an
+    # ActivityPub Accept header, and only `http://nodus:8080/statuses/<id>` is the
+    # object `/users/ada/outbox` lists. A fresh note is posted so the check never
+    # depends on a home timeline that has nothing in it.
+    note_status=$(nodus_api POST '/api/v1/statuses' "$(nodus_token)" \
+        '{"status":"hello from nodus, misskey reaction check","visibility":"public"}' |
+        json_body)
+    note_address=$(printf '%s' "$note_status" | jq -r '.id // empty')
+    printf 'nodus note id: %s\n' "$note_address"
+    [ -n "$note_address" ] || return 1
     response=$(misskey_api ap/show "$token" \
-        "$(jq -nc --arg uri "$note_uri" '{uri: $uri}')")
+        "$(jq -nc --arg uri "http://nodus:8080/statuses/$note_address" '{uri: $uri}')")
     printf '%s\n' "$response"
     note_id=$(printf '%s' "$response" | json_body | jq -r '.object.id // empty')
     [ -n "$note_id" ] || {
         printf 'RESULT: Misskey could not dereference the nodus note, no reaction sent.\n'
         return 1
     }
-    before=$(nodus_api GET "/api/v1/statuses/$(
-        printf '%s' "$note_uri" | sed 's|.*/||'
-    )/reactions" "$(nodus_token)" | json_body)
+    before=$(nodus_api GET "/api/v1/statuses/$note_address/reactions" "$(nodus_token)" | json_body)
     printf -- '-- send reaction\n'
     misskey_api notes/reactions/create "$token" \
         "$(jq -nc --arg id "$note_id" '{noteId: $id, reaction: "👍"}')"
     sleep 5
-    after=$(nodus_api GET "/api/v1/statuses/$(
-        printf '%s' "$note_uri" | sed 's|.*/||'
-    )/reactions" "$(nodus_token)" | json_body)
+    after=$(nodus_api GET "/api/v1/statuses/$note_address/reactions" "$(nodus_token)" | json_body)
     printf 'nodus reactions before: %s\n' "$before"
     printf 'nodus reactions after:  %s\n' "$after"
 }
@@ -579,11 +594,16 @@ cmd_follow() {
     ensure_peer_env
     require_peers_up
     [ -f "$STATE_DIR/nodus-account.json" ] || seed_nodus_token || true
-    check_nodus_to_mastodon
-    check_mastodon_to_nodus
-    check_misskey_to_nodus
-    check_peer_post_in_web_shell
+    # Each proof names what it saw and returns non-zero when it could not get to the
+    # end. One blocked direction must not hide the others, so the failures are
+    # collected and reported together instead of stopping the run at the first one.
+    local failed=0
+    check_nodus_to_mastodon || failed=1
+    check_mastodon_to_nodus || failed=1
+    check_misskey_to_nodus || failed=1
+    check_peer_post_in_web_shell || failed=1
     report_failure_logs
+    return "$failed"
 }
 
 case ${1:-} in

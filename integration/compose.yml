@@ -127,6 +127,11 @@ services:
       # service names, which resolve inside the `nodus-lab` network.
       NODUS_TELEMETRY: >-
         media=http://nodus-media-worker:3003,feed=http://nodus-feed:3000,scan=http://nodus-scan:3000,prune=http://nodus-prune:3000,calc=http://nodus-calc:3000
+      # Lab-only escape hatch, empty by default. The peers in compose.peers.yml
+      # have no certificate, so the API is told which hosts it may reach over
+      # plain `http`; TLS is skipped for exactly these names. Production must
+      # not set this — a production instance federates over https.
+      NODUS_ALLOW_INSECURE_PEERS: ${NODUS_ALLOW_INSECURE_PEERS:-}
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/healthz"]
       interval: 5s
