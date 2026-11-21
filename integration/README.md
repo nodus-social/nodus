@@ -18,7 +18,7 @@ integration/
   Caddyfile              route ownership for the whole origin
   initdb/00-nodus.sh     the `nodus` role, database and extensions
   .env.example           every knob, no secrets
-  scripts/               build, up, down, reset, seed, e2e
+  scripts/               build, up, down, reset, seed, e2e, ci
   e2e/                   Playwright specs and baselines; run via scripts/e2e.sh
 ```
 
@@ -30,6 +30,11 @@ integration/scripts/up.sh         # build if needed, start, wait for health
 integration/scripts/seed.sh       # admin + ada + grace, their posts and follows
 integration/scripts/e2e.sh        # Playwright in the pinned container image
 ```
+
+CI runs those same checks locally, through nektos/act, because GitHub runner
+minutes are expensive: `integration/scripts/ci.sh all`. The workflow is
+`workflow_dispatch` only; see `docs/ci.md` for stages, prerequisites and what a
+local green run does not prove.
 
 Stop and start again without losing the database:
 

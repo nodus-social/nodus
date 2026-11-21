@@ -20,12 +20,14 @@
 # Cargo.lock predates the sdk pins); the advisory cargo metadata step keeps
 # the drift visible.
 
+# Runner minutes are expensive, so the checks normally run locally with
+# `integration/scripts/ci.sh all` (nektos/act executes this same file). This
+# workflow is for a deliberate dispatched run, not for every push; see
+# integration/docs/ci.md.
+
 name: ci
 
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
 
 permissions:

@@ -28,3 +28,6 @@ integration/volumes/
 integration/e2e/node_modules/
 integration/e2e/test-results/
 integration/e2e/playwright-report/
+
+# act runs (integration/scripts/ci.sh)
+integration/.act/
