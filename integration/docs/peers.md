@@ -268,318 +268,266 @@ Two consequences are worth knowing before reading the results below:
   capability is needed. Without that, outbound delivery fails with
   `error sending request for url (http://mastodon.local/inbox)`.
 
-## What is proven, and what is not
+## What this run proves
 
-Run state at the time of writing: `integration/scripts/build.sh` built the API
-from the backend **working tree** (`LAB_BUILD_FROM_WORKTREE=1`, backend HEAD
-`79d9711`, tree clean — the superproject gitlink still records the older
-commit), `nodus-api` was recreated with the two-file compose set, both peers are
-healthy, and Sidekiq drains its queues.
+Run state: `integration/scripts/build.sh` built `nodus-api` from the backend
+**working tree** (`LAB_BUILD_FROM_WORKTREE=1`, `NODUS_BUILD_CONTEXT=$PWD`,
+`NODUS_DOCKERFILE=integration/Dockerfile.server`), because the superproject
+gitlink still records the older commit. Backend HEAD was `883185b`, which
+contains both federation fixes — `79d9711` (dial a named host over plain http)
+and `b503bed` (accept a signed delivery from a named plain-http host) — and
+`git status` in `nodus-backend` was clean. The built image was
+`nodus-lab/server:0.1.0` (`a38e6afd3af7`); the API was recreated with the
+two-file compose set and `/healthz` answered `200`.
 
-### (a) nodus → Mastodon: resolve, follow, ingest — **resolve and follow only**
+The lab origin answers **https on 443** inside `nodus-lab` (Caddy
+`https://nodus:443 { tls internal }`), and both peers trust the lab CA. That leg
+is proven from inside the peer containers:
 
-Resolution works, and only through an actor URL:
+```sh
+docker exec nodus-lab-mastodon curl -sS -o /dev/null -w '%{http_code}\n' \
+  https://nodus/api/v1/meta
+# 200
+docker exec nodus-lab-mastodon curl -sS -o /dev/null -w '%{http_code}\n' \
+  'https://nodus/.well-known/webfinger?resource=acct:ada@nodus'
+# 200
+```
+
+What that did **not** do is get a peer delivery into the origin. The four
+proofs below are reported as they came out, not as intended.
+
+### (a) nodus → Mastodon: resolve, follow, ingest — **resolve and follow only, no ingest**
+
+Resolution works through the actor URL:
 
     GET /api/v2/search?q=http://mastodon.local/users/alice&resolve=true
-    {"accounts":[{"id":"01m7y0ajbp2ctfq9w8j2d8st91","username":"alice",
-                  "acct":"alice@mastodon.local","url":"https://mastodon.local/@alice",
-                  ...}],"statuses":[],"hashtags":[]}
     HTTP 200
-    # API log: WARN nodus_server_api::remote: reaching this peer over plain http
-    #   because NODUS_ALLOW_INSECURE_PEERS names it; TLS is not used host=mastodon.local
+    {"accounts":[{"id":"01m7y0ajbp2ctfq9w8j2d8st91","username":"alice",
+                  "acct":"alice@mastodon.local","url":"https://mastodon.local/@alice"},
+                 ...],"statuses":[],"hashtags":[]}
 
-The port-less form is the one that answers: Mastodon now serves port 80 inside
-the network (see "Topology and identity"), so `http://mastodon.local:3000/...`
-is a refusal while `http://mastodon.local/users/alice` is the actor. The follow
-is accepted locally:
+The follow is accepted locally:
 
     POST /api/v1/accounts/01m7y0ajbp2ctfq9w8j2d8st91/follow
-    {"id":"...","following":true,"requested":false,...}   HTTP 200
+    {"id":"01m7y0ajbp2ctfq9w8j2d8st91","following":true,"requested":false,...}
+    HTTP 200
 
-**Ingestion does not happen, because the `Follow` never lands.** The origin
-signs it and posts to the shared inbox it was advertised, and Mastodon rejects
-the signature:
+But nothing is ingested:
 
-    WARN nodus_server_api::outbox: activity delivery failed inbox=http://mastodon.local/inbox
-      attempts=3 status=Some(401) retry=false
-      error=inbox answered 401 Unauthorized: {"error":"Failed to fetch remote data:
-      failed to connect: Connection refused - connect(2) for 172.20.0.11:443 on
-      https://nodus/.well-known/webfinger?resource=acct:ada@nodus"}
+    GET /api/v1/accounts/01m7y0ajbp2ctfq9w8j2d8st91/statuses?limit=10
+    []            # length 0, before and after the follow
 
-The rejected actor is `ada@nodus`, i.e. the origin's own handle. Mastodon's
-`Webfinger#standard_url` (`app/lib/webfinger.rb:113-121`) hardcodes
-`https://<domain>` for every domain that is not `.onion`, and the origin's
-handle domain carries no port, so verification dials `https://nodus` on **443**
-and is refused. `GET /api/v1/accounts/<id>/statuses` answers `[]` afterwards:
-nothing was ingested.
+The reason is still the inbound signature check (see "Why inbound still
+fails"), and the delivery ledger tells the same story — one old `Follow` row
+from the previous run, never re-attempted because the origin already had the
+follow recorded locally:
 
-Nothing in the origin can fix this from its side: the handle `ada@nodus` is what
-nodus advertises, and a peer is entitled to require TLS for it. The existing
-`NODUS_ALLOW_INSECURE_PEERS` lifts the origin's *own* guard; it cannot make
-Mastodon accept a plain-http signer.
+    select activity->>'type', created_at, attempts, last_status_code, last_error
+      from federation_delivery order by created_at desc limit 2;
+    Undo   | 2026-11-21 03:52:22 | 0 | 202 | ok
+    Undo   | 2026-11-21 02:56:03 | 1 | 401 | Failed to fetch remote data:
+             failed to connect: Connection refused ... 172.20.0.11:443
+             on https://nodus/.well-known/webfinger?resource=acct:ada@nodus
+    Follow | 2026-11-21 02:52:53 | 3 | 401 | Fetching attempt skipped because
+             of recent connection failure
 
-### (b) Mastodon → nodus: resolve and follow — **blocked twice over**
+Unfollowing (`DELETE /api/v1/accounts/<id>/follow`, `200`) and following again
+(`POST .../follow`, `200`) created a fresh local follow row but no new `Follow`
+delivery row — only the `Undo` was sent, and Mastodon accepted it with `202`
+(see "What the TLS leg did prove"). The peer was therefore never told about the
+new follow. That is a delivery-queue observation, separate from the 401 wall.
 
-Mastodon cannot resolve the origin at all:
+### (b) Mastodon → nodus: follow and timeline — **blocked by the origin's 401**
 
-    GET /api/v2/search?q=http://nodus:8080/users/ada&resolve=true&type=accounts
-    {"error":"Remote data could not be fetched"}            HTTP 503
-    # Mastodon log: Fetching attempt skipped because of recent connection failure
-    #   ... 172.20.0.11:443 on https://nodus/...
+Mastodon resolves the origin by actor URL (`/api/v2/search?q=http://nodus:8080/users/ada&resolve=true`
+→ `200`), and the follow endpoint answers `200`, but Mastodon never records the
+follow:
 
-Mastodon *can* fetch that actor — from inside the peer container,
-`curl -H 'Accept: application/activity+json' http://nodus:8080/users/ada` is
-`200` — so the address and the scheme are fine and the WebFinger step in (a) is
-the failure: `https://nodus` on 443 is refused, and Mastodon then caches the
-domain as failing. A handle (`@ada@nodus`) never gets this far; the actor URL at
-least fails for a reason that can be read.
+    docker exec nodus-lab-mastodon bundle exec rails runner \
+      'a=Account.find_local("alice"); puts Follow.where(target_account: a).count'
+    # 0
+    # followers_of_alice=[]  (nodus presence on Alice's home timeline: absent)
 
-The second wall is on the origin's side and it stops *everything inbound*, so it
-is worth stating on its own: **the origin answers `401` to every signed peer
-delivery.** Misskey's delivery of a reaction is the cleanest evidence, because
-its signature can be checked independently:
+The cause is Mastodon's `Follow` delivery to the origin:
 
-    # Misskey -> POST http://nodus:8080/users/ada/inbox, recorded by a Caddy access log
-    Signature: keyId="http://misskey.local:18082/users/attcaex9uoqp0002#main-key",
-               algorithm="rsa-sha256",headers="(request-target) date host digest",...
-    Digest: SHA-256=hyL2Uxhc3LB3VwCrcAcgRSRXyNLeFFAXZgnvQ+MivNU=
-    # verified by hand against the actor's published publicKeyPem:
-    #   signing string "(request-target): post /users/ada/inbox\ndate: ...\n
-    #                    host: nodus:8080\ndigest: ..."  ->  Verified OK
-    # the origin's answer to that same request:  401
+    Mastodon::UnexpectedResponseError: http://nodus:8080/users/ada/inbox
+      returned code 401
+    # Sidekiq retries; the origin's log has no ingest line for it
 
-The cause is in the origin, not the peer: `NODUS_ALLOW_INSECURE_PEERS` is
-consulted only by the outbound client (`crates/api/src/remote.rs`), while the
-inbound verifier still routes every remote URL through
-`validate_remote_url` (`crates/api/src/activitypub.rs:936-947`), whose first
-check is
+Clearing Mastodon's cached view did not help because the failure is not cached
+domain state: `tootctl cache clear` printed `OK`, web and Sidekiq were restarted,
+and there was no `Instance` row for `nodus` to purge (`tootctl domains` exposes
+only crawl/purge and showed nothing for the lab). The stale `172.20.0.11:443`
+message in the ledger predates the Caddy restart; `getent hosts nodus` inside
+Mastodon now resolves `172.20.0.16`, and the direct `https://nodus/...` curls
+above answer `200`. The 401 comes from the request body, not from reaching us.
+
+### (c) Misskey reaction on a nodus post — **created on Misskey, delivery still 401**
+
+`ap/show` dereferences a nodus note (`200`) and the reaction is accepted:
+
+    POST /api/notes/reactions/create {"noteId":"...","reaction":"👍"}
+    HTTP 204
+    GET /api/v1/statuses/<id>/reactions   -> []   # before and after
+    select count(*) from status_reaction where status_id='<id>';
+    # 0
+
+Misskey's delivery queue shows why:
+
+    VERB [queue deliver] active id=10 to=http://nodus:8080/users/ada/inbox
+    ERR  [queue deliver] failed(UnrecoverableError: 401 Unauthorized)
+         id=10 attempts=1/12 to=http://nodus:8080/users/ada/inbox
+    VERB [queue deliver] active id=11 to=http://nodus:8080/users/ada/inbox
+    ERR  [queue deliver] failed(UnrecoverableError: 401 Unauthorized)
+
+So the honest answer is still **nodus does not ingest the reaction, and the
+activity never reaches the ingest handler**: it is refused at signature
+verification. This run cannot say whether a `Like` would be recorded once it
+gets past that gate.
+
+The code-level caveats from the previous run still stand and are the next
+things to fix after the 401:
+
+- Misskey renders `Like` with `content` (`ApRendererService#renderLike`), not
+  `EmojiReact`; nodus handles `Like` (`activitypub.rs:468` → `like_local`,
+  `:1112`).
+- `EmojiReact` is not an `ActivityKind` (`server-sdk/crates/activitypub-core/src/activity.rs:71-89`)
+  and is rejected with `422 unsupported activity type: EmojiReact`.
+- Even an accepted `Like` would not show on a local post: `like_local` resolves
+  the target via `statuses::by_uri` (`crates/store/src/statuses.rs:191`), local
+  rows have a null `uri`, and `status_for_uri`
+  (`crates/api/src/poll_votes.rs:125-139`) — which handles both spellings — is
+  not used by `like_local`/`boost_local`. There is no table or handler for a
+  remote emoji reaction as such; a `Like` becomes a favourite, and an
+  `EmojiReact` would need a new `ActivityKind` plus a reaction table.
+
+### (d) A peer post in the lab web shell — **not observed**
+
+With nothing ingested from either peer there is no peer-authored post to show at
+`http://127.0.0.1:18080`; the shell serves only ada's own posts. No screenshot
+can evidence a state that does not exist. This is blocked by (b) and (c), not by
+the shell.
+
+## Why inbound still fails: `.local` is reserved
+
+`b503bed` fixed the scheme half of the inbound guard, but not the host half.
+`validate_remote_url` (`crates/api/src/activitypub.rs:947-965`) now delegates the
+scheme decision to `remote::scheme_allowed`, which passes for a host named in
+`NODUS_ALLOW_INSECURE_PEERS`; it then calls `check_url_host`, and
+`is_disallowed_domain` (`crates/api/src/activitypub.rs:981-993`) treats every
+name under `.local` as reserved:
 
 ```rust
-if parsed.scheme() != "https" || !parsed.username().is_empty() || parsed.password().is_some() {
-    return Err(ApiError::unprocessable("URL must be a public HTTPS URL"));
-}
+["localhost", "local", "internal", "localdomain", "home.arpa"]
+    .iter()
+    .any(|reserved| {
+        d == *reserved
+            || d.strip_suffix(reserved)
+                .is_some_and(|prefix| prefix.ends_with('.'))
+    })
 ```
 
-`verify_signature` turns that into a refusal
-(`crates/api/src/activitypub.rs:376`,
-`ApiError::unauthorized("signing key actor URL is invalid")`), before any key is
-fetched. The same predicate filters inbound object ids
-(`activitypub.rs:551`, `:576`, `:602`, `:670`, `:1335`), so even a delivery that
-got past the signature check would drop its plain-http objects. This is a
-backend gap, reported rather than patched here (the pin bump is separate work).
+`mastodon.local` and `misskey.local` both match, so `validate_remote_url`
+returns `URL host is not a publicly routable destination`, which
+`verify_signature` turns into
+`ApiError::unauthorized("signing key actor URL is invalid")`
+(`crates/api/src/activitypub.rs:377`). `NODUS_ALLOW_INSECURE_PEERS` and
+`NODUS_ALLOW_PRIVATE_HOSTS` do not bypass this predicate.
 
-The refusal can be reproduced without holding any peer's key, which is what
-pins the cause to the scheme and not to a bad signature:
+Reproduce without any peer key — the signature need not be valid, because the
+actor URL is rejected before the key is fetched:
 
 ```sh
-body='{"type":"Like","actor":"http://misskey.local:18082/users/probe",
+body='{"type":"Like","actor":"http://mastodon.local/users/alice",
        "object":"http://nodus:8080/statuses/x"}'
 digest="SHA-256=$(printf '%s' "$body" | openssl dgst -sha256 -binary | openssl base64 -A)"
-sig=$(printf '%s' "(request-target): post /users/ada/inbox\nhost: 127.0.0.1:18080\n
-date: $date\ndigest: $digest" | openssl dgst -sha256 -sign k.pem | openssl base64 -A)
-# keyId http  -> 401 {"error":"signing key actor URL is invalid"}
-# keyId https -> 401 {"error":"signing key does not match activity actor"}
+date=$(date -u '+%a, %d %b %Y %H:%M:%S GMT')
+# Signature keyId="http://mastodon.local/users/alice#main-key", algorithm="rsa-sha256",
+#   headers="(request-target) host date digest"
+curl -sS -i -X POST http://127.0.0.1:18080/users/ada/inbox \
+  -H 'content-type: application/activity+json' \
+  -H "Date: $date" -H "Digest: $digest" -H "Signature: $sig" -d "$body"
+# HTTP/1.1 401 Unauthorized
+# {"error":"signing key actor URL is invalid"}
 ```
 
-The second answer is the control: with an `https` keyId the request gets past
-the scheme check and fails later, on the actor/keyId mismatch it really has. The
-plain-http request never gets that far.
+## What the TLS leg did prove
 
-Consequence: no nodus post reached a Mastodon timeline, and nothing from either
-peer reached the origin. Proofs (c) and (d) below inherit exactly this wall.
+The `Undo` delivery at `03:52:22` was accepted by Mastodon with `202`:
 
-### (c) Misskey reaction on a nodus post — **peer side proven, delivery refused**
+    nodus_server_api::outbox: activity delivered inbox=http://mastodon.local/inbox status=202
 
-Misskey refuses plain-http ActivityPub ids unless it runs outside production.
-`checkHttps` (`packages/backend/src/misc/check-https.ts`, compiled in the image
-as `built/misc/check-https.js`) is
+Mastodon verifies a signature by fetching the signing actor, so a `202` means it
+reached `https://nodus/...` through the lab CA and verified a nodus-signed
+activity. Caddy's internal-CA leg and nodus's outbound signing both work. What
+is left is the origin's inbound host classification.
 
-```js
-export function checkHttps(url) {
-    return url.startsWith('https://') ||
-        (url.startsWith('http://') && process.env.NODE_ENV !== 'production');
-}
-```
+## Two node URLs, and which one is ActivityPub
 
-and `ApNoteService` throws `unexpected schema of note.id: <uri>` otherwise. The
-lab peer therefore sets `NODE_ENV: development` in `compose.peers.yml` — the
-peer's own escape hatch, lab-only, next to the origin's — and with it Misskey
-dereferences a nodus note. Note the URL: it is the ActivityPub id, not the
-Mastodon-API `uri` (see the next section). The script posts a fresh note so the
-check never depends on a timeline having anything in it:
+Unchanged from the previous run, and still worth knowing:
+
+    status.uri / status.url  ->  http://nodus:8080/@ada/<id>      (HTML page)
+    AP object id (outbox)    ->  http://nodus:8080/statuses/<id>  (activity+json)
+
+`/@ada/<id>` answers `text/html` even for `Accept: application/activity+json`,
+so a peer that dereferences `status.uri` sees a web page and reports
+`Content type is not application/activity+json or application/ld+json`. Use the
+outbox id; `scripts/peers.sh` does.
+
+## Recreating the origin changes its address, and Misskey caches it
+
+Each `up -d --no-deps nodus-api caddy` can hand the name a new address on
+`nodus-lab`. Misskey keeps the old one and answers `ap/show` with
+`connect ECONNREFUSED <old-ip>:8080` while `curl http://nodus:8080/healthz`
+inside the same container is `200`. `docker compose ... restart misskey`
+clears it. The stale `172.20.0.11:443` in Mastodon's old ledger row is the same
+kind of artifact, not a live failure.
+
+## What would close the remaining gap
+
+1. Exempt a host named in `NODUS_ALLOW_INSECURE_PEERS` from
+   `is_disallowed_domain` (or check the allowlist before the reserved-name
+   rule), while still rejecting address literals and private IPs. That is the
+   one change that opens (a), (b), (c) and (d); `b503bed` deliberately left the
+   private-name rule untouched.
+2. Make `like_local`/`boost_local` resolve local targets with `status_for_uri`
+   so an accepted `Like` lands on a local post.
+3. Decide whether `EmojiReact` should be a first-class `ActivityKind` with a
+   reaction table, or whether Misskey's `Like`+`content` is enough.
+
+## Commands used
 
 ```sh
-POST /api/v1/statuses  {"status":"hello from nodus, misskey reaction check"}
-  -> id 01m7y194b716ng6a3h05h195by
-POST /api/ap/show  {"uri":"http://nodus:8080/statuses/01m7y194b716ng6a3h05h195by"}
-HTTP 200 {"type":"Note","object":{"id":"atte8oxs3wn50002","userId":"attdzubtixas0001",
-  "user":{"name":"ada","username":"ada","host":"nodus:8080"},
-  "text":"hello from nodus, misskey reaction check","reactionCount":0,
-  "uri":"http://nodus:8080/statuses/01m7y194b716ng6a3h05h195by",
-  "url":"http://nodus:8080/@ada/01m7y194b716ng6a3h05h195by"}}
-# Misskey keeps the port in the remote host it records: host "nodus:8080"
-POST /api/notes/reactions/create  {"noteId":"atte8oxs3wn50002","reaction":"👍"}
-HTTP 204
-GET /api/v1/statuses/01m7y194b716ng6a3h05h195by/reactions  -> []  (before and after)
-```
-
-The reaction is created locally and Misskey then tries to tell the origin:
-
-```sh
-VERB [queue deliver] active id=9 to=http://nodus:8080/users/ada/inbox
-ERR  [queue deliver] failed(UnrecoverableError: 401 Unauthorized)
-     id=9 attempts=1/12 age=5ms to=http://nodus:8080/users/ada/inbox
-```
-
-So the honest answer to "does nodus ingest `EmojiReact`/`Like`?" is **not
-answered by this run**: the activity never reaches the ingest code, it is
-refused at signature verification for being plain http (see (b)). Whether the
-verb itself is understood stays open; it is not a case of the origin silently
-ignoring the verb. Repeated for three reactions (`👍`, `❤️`, `😀`), all `401`,
-all `UnrecoverableError` at the first attempt.
-
-What the code says about the verbs, for whoever picks this up next:
-
-- Misskey does **not** emit `EmojiReact`. `ApRendererService#renderLike`
-  (`/misskey/packages/backend/built/core/activitypub/ApRendererService.js:231`)
-  always renders `type: 'Like'` carrying `content: <the reaction>`, custom emoji
-  included, so a working path would present nodus with `Like`.
-- nodus handles `Like`: `ActivityKind::Like` dispatches to `like_local`
-  (`crates/api/src/activitypub.rs:468`, `:1112`), which records a favourite.
-- `EmojiReact` is not an `ActivityKind` at all
-  (`server-sdk/crates/activitypub-core/src/activity.rs:71-89`), and
-  `Activity::from_json` refuses an unknown verb with `unsupported activity type:
-  EmojiReact` → `422`. A peer that does send it is rejected, not ignored.
-- Even a `Like` that arrived would not count on a local post: `like_local`
-  resolves its target with `statuses::by_uri` (`crates/store/src/statuses.rs:191`),
-  and a local status row has a null `uri` — the check below answers `0`.
-
-```sh
-# the row for the note Misskey reacted to, looked up by the id Misskey sent
-select count(*) from status where uri='http://nodus:8080/statuses/01m7y194b716ng6a3h05h195by';
-  -> 0
-select count(*) from status where id='01m7y194b716ng6a3h05h195by';
-  -> 1
-```
-
-`status_for_uri` (`crates/api/src/poll_votes.rs:125-139`) already resolves both
-spellings for a local status; `like_local` and `boost_local` do not use it. A
-third backend finding, also reported rather than patched.
-
-### (d) A peer post through the lab shell — **not observed**
-
-`http://127.0.0.1:18080` serves the shell and its API (`/healthz` `200`, peers
-healthy), but with nothing ingested from either peer there is no peer-authored
-post to render. Nothing about the shell's rendering of remote posts was
-exercised; it is blocked exactly like (b) and (c).
-
-### Recreating the origin changes its address, and Misskey caches it
-
-Every `up -d --no-deps nodus-api caddy` hands the containers new addresses on
-`nodus-lab`. Mastodon re-resolves each time, but Misskey does not: after one
-such recreate it kept dialling the previous holder of the name and answered
-`ap/show` with
-
-```sh
-500 {"error":{"info":{"e":{"message":"request to http://nodus:8080/statuses/<id>
-  failed, reason: connect ECONNREFUSED 172.20.0.11:8080"}}}}
-```
-
-while `http://nodus:8080/healthz` inside the same container answered `200` —
-`getent hosts nodus` had moved to a different address. `docker compose restart
-misskey` clears it. Nothing is wrong with the origin when this appears; check
-what the peer resolves before chasing it.
-
-### Two node URLs, and which one is ActivityPub
-
-The origin's Mastodon-API status object and its ActivityPub object are not the
-same URL:
-
-    status.uri / status.url  ->  http://nodus:8080/@ada/01m7y0tj548yrjk390mx401ngv
-    AP object id (outbox)    ->  http://nodus:8080/statuses/01m7y0tj548yrjk390mx401ngv
-
-`/@ada/<id>` answers `Content-Type: text/html` even for
-`Accept: application/activity+json` (a full 181 KB shell page), so a peer that
-dereferences the `uri` cannot see a note. Misskey says so plainly:
-
-    POST /api/ap/show {"uri":"http://nodus:8080/@ada/01m7y..."}
-    {"error":{"message":"Internal error occurred...",
-      "info":{"e":{"message":"Validate content type of AP response:
-        Content type is not application/activity+json or application/ld+json"}}}}
-
-The AP id is reachable from the actor's outbox
-(`/users/ada/outbox?page=true` → `.orderedItems[].object.id`). `scripts/peers.sh`
-takes the note id that way. This asymmetry is a second backend finding: a
-Mastodon-API client that hands a `status.uri` to a peer hands it a web page.
-
-### What would close (a) and (b)
-
-For (a): TLS on the origin for the name its handles carry — `https://nodus` on
-443 with a certificate both peers trust (a lab CA in the Mastodon and Misskey
-trust stores) — because Mastodon's WebFinger client will not look at `http://`
-for a non-`.onion` domain. The ingress half of that now exists (see "TLS in the
-lab"): Caddy answers https on 443 with its internal CA, and both peers verify it.
-The backend half — advertising https URLs instead of `http://nodus:8080` — is
-still open, and the run below predates the TLS leg.
-
-For (b), (c) and (d): consult `NODUS_ALLOW_INSECURE_PEERS` in the inbound
-verifier too, i.e. let `validate_remote_url` (and the object-id filters built on
-it) accept `http` for a listed host, exactly as `parse_target` already does for
-outbound requests. No peer change is needed; the signatures in this run were
-valid.
-
-### Commands used
-
-```sh
-# build the API from the clean backend working tree (pin bump is separate)
-LAB_BUILD_FROM_WORKTREE=1 \
-  NODUS_BUILD_CONTEXT=$PWD NODUS_DOCKERFILE=integration/Dockerfile.server \
-  docker compose --project-name nodus-lab --env-file integration/.env \
-    -f integration/compose.yml build nodus-api
+# build the API from the worktree (pin bump is separate)
+export NODUS_BUILD_CONTEXT=$PWD NODUS_DOCKERFILE=integration/Dockerfile.server
+export CARGO_BUILD_JOBS=8
+docker compose --project-name nodus-lab --env-file integration/.env \
+  -f integration/compose.yml build nodus-api
 
 # recreate only the API, keeping the peers overlay's private-host allowance
 docker compose --project-name nodus-lab --env-file integration/.env \
   -f integration/compose.yml -f integration/compose.peers.yml \
-  up -d --no-deps nodus-api
+  up -d --force-recreate --no-deps nodus-api
 
-# Mastodon must serve port 80 for its own advertised inbox URL
-docker compose --project-name nodus-lab --env-file integration/.env \
-  -f integration/compose.yml -f integration/compose.peers.yml \
-  up -d --no-deps mastodon
+# peers: TLS leg and account setup
+docker exec nodus-lab-mastodon curl -sS -o /dev/null -w '%{http_code}\n' \
+  https://nodus/api/v1/meta
+docker exec nodus-lab-mastodon bundle exec bin/tootctl cache clear
 
-# the Misskey peer only dereferences http AP ids outside production
-docker compose --project-name nodus-lab --env-file integration/.env \
-  -f integration/compose.yml -f integration/compose.peers.yml \
-  up -d --no-deps misskey
-```
+# the four checks
+integration/scripts/peers.sh follow
 
-Reading the two sides of a refused delivery:
+# ledger, follow state and reaction state
+docker exec -e PGPASSWORD="$(sed -n 's|^NODUS_DB_PASSWORD=||p' integration/.env)" \
+  nodus-lab-postgres psql -U nodus -d nodus -c \
+  "select activity->>'type', created_at, attempts, last_status_code, last_error
+     from federation_delivery order by created_at desc limit 5;"
+docker exec nodus-lab-mastodon bundle exec rails runner \
+  'a=Account.find_local("alice"); puts Follow.where(target_account: a).count'
+docker exec -e PGPASSWORD="$(sed -n 's|^NODUS_DB_PASSWORD=||p' integration/.env)" \
+  nodus-lab-postgres psql -U nodus -d nodus -c \
+  "select count(*) from status_reaction where status_id='<id>';"
 
-```sh
-# the peer's own view: what was posted, and what came back
-docker logs --since 5m nodus-lab-misskey | grep -E 'queue deliver'
-
-# the origin's inbox body, for a request that carries no signature
-docker exec nodus-lab-misskey curl -sS -X POST \
-  -H 'content-type: application/activity+json' -d '{"type":"Like"}' \
-  http://nodus:8080/users/ada/inbox -w ' %{http_code}\n'
-# {"error":"missing signature"} 401
-
-# the Misskey direction: dereference a nodus note, then react to it
-curl -sS -X POST http://127.0.0.1:18082/api/ap/show \
-  -H "Authorization: Bearer $(jq -r .token integration/state/misskey-account.json)" \
-  -H 'content-type: application/json' \
-  -d '{"uri":"http://nodus:8080/statuses/<status-id>"}'
-curl -sS -X POST http://127.0.0.1:18082/api/notes/reactions/create \
-  -H "Authorization: Bearer $(jq -r .token integration/state/misskey-account.json)" \
-  -H 'content-type: application/json' \
-  -d '{"noteId":"<note-id from ap/show>","reaction":"👍"}' -w ' %{http_code}\n'
-# 204, then the delivery above fails 401
-
-# and the outbound ledger
-docker exec -e PGPASSWORD="$(sed -n 's|^NODUS_DB_PASSWORD=||p' \
-  integration/.env)" \
-  nodus-lab-postgres psql -U nodus -d nodus \
-  -c "select activity->>'type', attempts, last_error, delivered_at
-        from federation_delivery order by created_at desc limit 5;"
+# peer-side delivery failures
+docker logs --since 30m nodus-lab-misskey | grep -E 'queue deliver'
 ```
