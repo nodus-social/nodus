@@ -116,7 +116,7 @@ jobs:
             ${{ hashFiles('nodus-backend/Cargo.lock',
             'server-sdk/crates/*/Cargo.toml', 'sdk/**/Cargo.toml') }}
 
-      - name: give the test database the extensions a deployment installs
+      - name: install psql, ffmpeg, and the deployment's extensions
         # The service container creates an empty database; a real deployment
         # installs these. deploy/docker/entrypoint.sh and
         # integration/initdb/00-nodus.sh both run the statements below. They
@@ -129,7 +129,11 @@ jobs:
         # a deployment has.
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends postgresql-client
+          # The media tests synthesise their fixtures: media.rs runs
+          # `ffmpeg -f lavfi -i color=c=blue:size=1280x720:...` and expects it
+          # on PATH. bookworm/main ships ffmpeg, so install it here rather
+          # than skip the test the job exists to catch.
+          apt-get install -y --no-install-recommends postgresql-client ffmpeg
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
           CREATE EXTENSION IF NOT EXISTS citext;
           CREATE EXTENSION IF NOT EXISTS pg_trgm;
@@ -212,11 +216,15 @@ jobs:
       - name: seed ada and grace
         run: integration/scripts/seed.sh
 
-      - name: integration e2e (Caddy origin)
-        working-directory: integration/e2e
+      - name: integration e2e (Caddy origin, inside the pinned browser image)
+        # integration/scripts/e2e.sh runs the suite in the pinned Playwright
+        # container so the renderer matches the re-taken baselines, and
+        # forwards its arguments to `playwright test`. Only --retries=0 is
+        # assumed here; the script does not exist yet. It needs the docker
+        # daemon the job already uses for the stack (not docker-in-docker).
         env:
           LAB_BASE_URL: http://127.0.0.1:${{ env.LAB_HTTP_PORT }}
-        run: npx playwright test --retries=0
+        run: integration/scripts/e2e.sh --retries=0
 
       - name: extract the bundle from the built web image
         # The artifact under test is the one baked into the image, not a fresh
@@ -258,6 +266,7 @@ jobs:
             web/e2e/playwright-report
             web/e2e/test-results
             integration/e2e/playwright-report
+            integration/e2e/test-results
             lab-logs.txt
 
   gate:
