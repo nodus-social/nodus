@@ -18,8 +18,8 @@ integration/
   Caddyfile              route ownership for the whole origin
   initdb/00-nodus.sh     the `nodus` role, database and extensions
   .env.example           every knob, no secrets
-  scripts/               build, up, down, reset, seed
-  e2e/                   Playwright on the host, against the Caddy origin
+  scripts/               build, up, down, reset, seed, e2e
+  e2e/                   Playwright specs and baselines; run via scripts/e2e.sh
 ```
 
 ## Quick start
@@ -28,7 +28,7 @@ integration/
 integration/scripts/build.sh      # build both images from the pinned commits
 integration/scripts/up.sh         # build if needed, start, wait for health
 integration/scripts/seed.sh       # admin + ada + grace, their posts and follows
-cd integration/e2e && npm install && npx playwright test
+integration/scripts/e2e.sh        # Playwright in the pinned container image
 ```
 
 Stop and start again without losing the database:
@@ -70,11 +70,11 @@ and for federation identity even when the host port changes.
 This checkout sets `NODUS_HTTP_PORT=18080` in the untracked `integration/.env`
 because a root-owned podman Caddy on this machine already holds host port 8080.
 That container is not ours and is never touched. Everything below works
-unchanged; the e2e suite reads the same value from `LAB_BASE_URL`:
+unchanged; the e2e script reads the same value from
+`integration/.env` (`scripts/e2e.sh` derives `LAB_BASE_URL` from it):
 
 ```sh
-cd integration/e2e
-LAB_BASE_URL=http://127.0.0.1:18080 npx playwright test
+integration/scripts/e2e.sh
 ```
 
 ## Containers
@@ -172,19 +172,68 @@ downloads by default is newer than bookworm's glibc allows).
 
 ## The e2e harness
 
-Playwright runs on the host against the Caddy origin. Browsers are the ones
-already in `~/.cache/ms-playwright`: `@playwright/test` is pinned to 1.65.0 so
-`npm install` never pulls a different chromium.
+Playwright runs **inside the official Playwright image against the Caddy
+origin**, through `scripts/e2e.sh`. The image tag is derived from the
+`@playwright/test` pin in `e2e/package.json` — currently 1.65.0, so
+`mcr.microsoft.com/playwright:v1.65.0-noble` — which makes the browser build a
+pinned artifact instead of "whatever chromium the machine has".
 
 ```sh
-cd integration/e2e
-npm ci
-LAB_BASE_URL=http://127.0.0.1:18080 npx playwright test
+integration/scripts/e2e.sh                      # the whole suite
+integration/scripts/e2e.sh --project=desktop    # one project
+integration/scripts/e2e.sh --grep home          # one test
+integration/scripts/e2e.sh --update-snapshots   # rewrite every baseline
 ```
 
+Every argument is forwarded to `playwright test` (a leading `--` is dropped, so
+`e2e.sh -- --project=desktop` is the same as above). The script creates a
+`nodus-lab-e2e-node-modules` volume for the container's `node_modules`, runs
+`npm ci` into it on every invocation, and mounts the checkout at `/work` with
+`--network host`, so the lab is reached at `http://127.0.0.1:$NODUS_HTTP_PORT`
+exactly as a host run reaches it. The host `e2e/node_modules` is never touched.
+`LAB_BASE_URL`, `LAB_HTTP_PORT` and `LAB_HTTPS_PORT` override the ports; CI
+passes `LAB_BASE_URL=http://127.0.0.1:$LAB_HTTP_PORT`.
+
+### Visual baselines are container-rendered
+
+The committed PNGs under `e2e/tests/*-snapshots/` are the source of truth for
+what the product looks like, and they are **rasterised by the browser in that
+image**. Fonts, hinting and antialiasing differ between two Linux hosts: CI run
+44871012849 showed `composer-desktop-linux.png` differing by 2427 pixels (ratio
+0.02) and `drive-desktop-linux.png` by 7427 pixels (ratio 0.02) between this
+machine and the ubuntu-24.04 runner on identical same-platform snapshots. The
+`-linux` suffix cannot express that, because both hosts are Linux.
+
+Therefore:
+
+- a host `cd integration/e2e && npx playwright test` is **not authoritative for
+the `*-visual.spec.mjs` specs**. A diff there means the host renderer differs;
+it says nothing about the product.
+- the functional specs may be run either way (the container is still the
+reference, because CI uses it).
+- a diff inside the pinned image **is** a product difference. Do not paper over
+it by raising `maxDiffPixels` or the per-pixel `threshold`.
+
+To refresh a baseline, bring the lab up and seed it first — the baselines
+include the seeded graph, so a half-seeded database produces a wrong baseline —
+then rewrite from the image and commit the result:
+
+```sh
+integration/scripts/up.sh
+integration/scripts/seed.sh                 # ada, grace, admin, posts, follows
+integration/scripts/e2e.sh --update-snapshots
+```
+
+Take the federation baselines with the peers up and delivered
+(`scripts/peers.sh up && scripts/peers.sh follow`); the two federation specs
+skip without that data and would leave `peer-status-*.png` untouched. Before
+committing, run the suite once more **without** `--update-snapshots` and confirm
+zero failures: `--update-snapshots` overwrites whatever it renders, so only the
+following plain run proves the committed pair is self-consistent.
+
 Projects: `desktop` (1400×900), `tablet` (900×900), `phone` (Pixel 7). Animations
-are disabled and the caret hidden for screenshots; diffs are allowed up to 2% of
-pixels.
+are disabled and the caret hidden for screenshots; a screenshot may differ by at
+most 40 pixels, each channel compared with a 0.2 tolerance.
 
 - `tests/home.spec.mjs` — signs in as ada through the real OAuth dance, asserts
   Grace's post in the home timeline, then fetches the same timeline over REST
@@ -203,11 +252,9 @@ rows fewer; after `integration/scripts/peers.sh up` they run. Bring the peers up
 before the suite in any run that is meant to cover federation.
 
 Baselines live next to the specs (`tests/*-snapshots/*-linux.png`) and are
-committed. Regenerate them deliberately, with the stack up and seeded:
-
-```sh
-LAB_BASE_URL=http://127.0.0.1:18080 npx playwright test --update-snapshots
-```
+committed; they are container-rendered, see above. `scripts/e2e.sh
+--update-snapshots` is the only supported way to rewrite them.
+`docs/visual-baselines.md` is the short version of this policy for reviewers.
 
 `helpers/session.mjs` drives sign-in (instance → `/auth/login` → consent →
 `/home`) and parses the `nodus.session` record from `localStorage`;
@@ -273,9 +320,8 @@ follow-direction proofs from running today.
   survives client-side navigation.
 - Home, Local and Federated timelines; follow graph; posting; the account's own
   profile; `/api/v1/meta` capability handshake; drive share links.
-- All ten containers healthy, the seed script idempotent, and 12 Playwright
-  tests green: two functional specs and two visual specs across desktop, tablet
-  and phone, with committed baselines.
+- All ten containers healthy, the seed script idempotent, and the Playwright
+  suite green with committed, container-rendered baselines.
 
 ## Honest limitations
 
