@@ -95,10 +95,8 @@ test('a remote post renders at its permalink', async ({ page }) => {
 // The link the shell paints for a stored remote post names the peer but carries
 // the id THIS origin minted for its copy (web/crates/web-server/src/rows.rs,
 // `status_path(Some(&host), &inner.id)`): `/status/mastodon.test/<local ULID>`.
-// Only an anonymous caller reads the store for it: `public_api.rs` guards
-// `local_read` with `token.is_none()`, so the signed-in test above proxies to
-// the peer and keeps passing with `local_read` deleted. This one fails without
-// it — the id is not the peer's, so the peer answers 404.
+// The id is not the peer's, so a relay asks an instance for a post it never had;
+// the store answers, and `public_api.rs` makes that answer for every reader.
 test('an anonymous reader opens a remote post by the id this origin minted', async ({
   page,
   browser,
@@ -117,5 +115,18 @@ test('an anonymous reader opens a remote post by the id this origin minted', asy
 
   // `status.id` is this origin's id for the stored copy, not the peer's id.
   await page.goto(`/status/${PEER_HOST}/${status.id}`);
+  await expect(page.getByText(PEER_POST).first()).toBeVisible();
+});
+
+// The same link with a session attached. The token used to send the read to the
+// peer, which has never had this origin's id; the store now answers it either
+// way, so this is the half of the permalink gap that was recorded as open.
+test('a signed-in reader opens a remote post by the id this origin minted', async ({
+  page,
+}) => {
+  const session = await signIn(page, ACCOUNTS.ada);
+  const status = await requirePeerStatus(page.request, session, PEER_POST);
+
+  await navigate(page, `/status/${PEER_HOST}/${status.id}`);
   await expect(page.getByText(PEER_POST).first()).toBeVisible();
 });
