@@ -68,6 +68,19 @@ export async function lookupAccount(request, session, acct) {
   return response.json();
 }
 
+/// Like lookupAccount, but a 404 is an answer: null means the origin has never
+/// stored this acct. The federation specs use it to tell a missing peer from a
+/// broken one; their guard is this origin state, not an environment variable.
+export async function findStoredAccount(request, session, acct) {
+  const response = await request.get(
+    `${API_BASE}/api/v1/accounts/lookup?acct=${acct}`,
+    { headers: authHeaders(session) },
+  );
+  if (response.status() === 404) return null;
+  await expectOk(response, `GET /api/v1/accounts/lookup?acct=${acct}`);
+  return response.json();
+}
+
 export async function clearNotifications(request, session) {
   const response = await request.post(`${API_BASE}/api/v1/notifications/clear`, {
     headers: authHeaders(session),

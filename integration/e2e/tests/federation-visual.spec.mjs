@@ -1,20 +1,20 @@
 // Visual: the peer-authored card as the lab shell paints it. The card is found
 // by the delivered text, so a federation regression fails before the screenshot.
+// Needs the peers; without them the test skips with that reason (helpers/peers.mjs).
 
 import { expect, test } from '@playwright/test';
 
 import { ACCOUNTS } from '../fixtures.mjs';
-import { lookupAccount } from '../helpers/api.mjs';
 import { navigate } from '../helpers/navigation.mjs';
+import { PEER_ACCT, requirePeerAccount } from '../helpers/peers.mjs';
 import { signIn } from '../helpers/session.mjs';
 import { prepareVisualPage, volatileMasks } from '../helpers/visual.mjs';
 
-const PEER_ACCT = 'alice@mastodon.test';
 const PEER_POST = 'hello from mastodon, follows are live';
 
 test('peer-authored status card', async ({ page }) => {
   const session = await signIn(page, ACCOUNTS.ada);
-  const peer = await lookupAccount(page.request, session, PEER_ACCT);
+  const peer = await requirePeerAccount(page.request, session);
   expect(peer.acct, 'the origin stored the peer under its federated handle').toBe(PEER_ACCT);
 
   await navigate(page, '/search');
