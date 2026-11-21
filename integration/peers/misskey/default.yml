@@ -5,11 +5,12 @@
 # file, so nothing secret is committed.
 #
 # `url` is both the identity Misskey federates as and the absolute base for
-# links it serves. The published host port is part of it so that a developer
-# with `127.0.0.1 misskey.local` in /etc/hosts can open the UI, and the
-# container listens on the same port inside nodus-lab so peers dereference
-# the same URLs without a proxy.
-url: http://misskey.local:18082/
+# links it serves. It is the origin Caddy owns on 443 (see the Caddyfile's peer
+# site blocks), because that is the address peers actually dial: a peer builds
+# `<scheme>://<host>` from the id it was handed and never appends a port. The
+# container itself still listens on 18082, which Caddy proxies to and which is
+# also the published host port.
+url: https://misskey.local/
 port: 18082
 
 # Stock PostgreSQL 15+: Misskey 2024.11 does not use pg_roaringbitmap.

@@ -10,7 +10,8 @@
 # server-sdk and recommender are one Cargo graph. The root .dockerignore keeps
 # targets and node_modules out of it. Peer instances (Mastodon, Misskey) live
 # in compose.peers.yml and join the same fixed network, `nodus-lab`, where this
-# origin answers as http://nodus:8080.
+# origin answers as https://nodus (443, for the peers) and as http on 8080 (for
+# the host browser only).
 #
 # The `:?` markers make compose fail early when .env is absent; up.sh fills the
 # secrets on first run.
@@ -19,7 +20,10 @@ name: nodus-lab
 
 x-nodus-environment: &nodus-environment
   NODUS_DOMAIN: ${NODUS_DOMAIN:-nodus}
-  NODUS_BASE_URL: ${NODUS_BASE_URL:-http://nodus:8080}
+  # Canonical identity: what peers are told to fetch, and what every
+  # ActivityPub id and WebFinger alias is built from. It is the name Caddy
+  # serves on 443, not the host's browser URL (see NODUS_HTTP_PORT).
+  NODUS_BASE_URL: ${NODUS_BASE_URL:-https://nodus}
   NODUS_TITLE: ${NODUS_TITLE:-Nodus Lab}
   NODUS_DESCRIPTION: ${NODUS_DESCRIPTION:-Lab instance}
   NODUS_CONTACT_EMAIL: ${NODUS_CONTACT_EMAIL:-lab@nodus.test}
@@ -40,6 +44,11 @@ x-nodus-environment: &nodus-environment
   NODUS_HOME_CAP: ${NODUS_HOME_CAP:-400}
   NODUS_HOME_SHARDS: ${NODUS_HOME_SHARDS:-1}
   NODUS_VALKEY_CHANNEL: ${NODUS_VALKEY_CHANNEL:-nodus:home}
+  # Every outbound fetch goes to `https://<peer domain>`, which Caddy
+  # terminates with its internal CA. reqwest's platform verifier is
+  # rustls-native-certs, so this file is the whole root store:
+  # nodus-ca-entrypoint.sh writes the image's bundle plus the lab root.
+  SSL_CERT_FILE: /tmp/nodus-lab-ca-bundle.crt
 
 x-nodus-service: &nodus-service
   image: nodus-lab/server:0.1.0
@@ -50,9 +59,17 @@ x-nodus-service: &nodus-service
     context: ${NODUS_BUILD_CONTEXT:-./volumes/build-context}
     dockerfile: ${NODUS_DOCKERFILE:-Dockerfile.server}
   restart: unless-stopped
+  # tini stays PID 1; the wrapper appends Caddy's internal root to the image's
+  # bundle and then execs the role binary. Every role in this block makes
+  # outbound http requests (the API to peers, media to its own endpoint, the
+  # workers to the store), so all of them need the same trust rather than
+  # only the API.
+  entrypoint: ["/usr/bin/tini", "--", "/opt/nodus/bin/lab-ca-entrypoint.sh"]
   environment: *nodus-environment
   volumes:
     - nodus-data:/var/lib/nodus
+    - ./peers/ca/nodus-lab-ca.crt:/certs/nodus-lab-ca.crt:ro
+    - ./peers/ca/nodus-ca-entrypoint.sh:/opt/nodus/bin/lab-ca-entrypoint.sh:ro
   depends_on:
     postgres:
       condition: service_healthy
@@ -127,10 +144,10 @@ services:
       # service names, which resolve inside the `nodus-lab` network.
       NODUS_TELEMETRY: >-
         media=http://nodus-media-worker:3003,feed=http://nodus-feed:3000,scan=http://nodus-scan:3000,prune=http://nodus-prune:3000,calc=http://nodus-calc:3000
-      # Lab-only escape hatch, empty by default. The peers in compose.peers.yml
-      # have no certificate, so the API is told which hosts it may reach over
-      # plain `http`; TLS is skipped for exactly these names. Production must
-      # not set this — a production instance federates over https.
+      # Lab-only escape hatch, empty in this lab now that both peers answer
+      # https on 443 through Caddy. It names the hosts the API may also reach
+      # over plain `http`; TLS is skipped for exactly those names. Production
+      # must not set this — a production instance federates over https.
       NODUS_ALLOW_INSECURE_PEERS: ${NODUS_ALLOW_INSECURE_PEERS:-}
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/healthz"]
@@ -147,7 +164,9 @@ services:
       <<: *nodus-environment
       NODUS_BIND: 0.0.0.0:3003
       NODUS_MEDIA_NODE: media-1
-      NODUS_MEDIA_ENDPOINT: http://nodus:8080
+      # Media URLs are built from this endpoint, so it names the canonical
+      # origin, not the host's browser port.
+      NODUS_MEDIA_ENDPOINT: https://nodus
     healthcheck:
       # The media role serves bytes, not /healthz: a 200 on the built-in avatar
       # proves the router is up without touching the catalogue.
@@ -267,7 +286,7 @@ services:
     ports:
       - "${NODUS_HTTP_PORT:-8080}:8080"
     # 443 is not published: the host already owns that port and nothing on the
-    # host needs to reach it. Peers resolve the network alias `nodus` and dial
+    # host needs to reach it. Peers resolve the network aliases below and dial
     # https on 443 inside `nodus-lab`, so the port only has to be open on the
     # container's own interface.
     expose:
@@ -277,6 +296,13 @@ services:
         aliases:
           # The identity NODUS_BASE_URL advertises, and the name peers resolve.
           - nodus
+          # The peer names, served here and proxied to the peer containers by
+          # the two site blocks at the end of the Caddyfile. Caddy owns these
+          # names so that `<name>:443` is unambiguous on the network: a peer
+          # container must not also answer to its own advertised name, or
+          # Docker's DNS would hand out two addresses for it.
+          - mastodon.local
+          - misskey.local
     depends_on:
       nodus-api:
         condition: service_healthy

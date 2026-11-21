@@ -52,8 +52,12 @@ x-mastodon-environment: &mastodon-environment
   # The identity peers see and the identity the web UI is served from.
   LOCAL_DOMAIN: mastodon.local
   WEB_DOMAIN: mastodon.local
-  # 1_hosts.rb forces https only in production; development honours this.
-  LOCAL_HTTPS: "false"
+  # 1_hosts.rb forces https only in production; development honours this. It is
+  # on because Caddy serves `https://mastodon.local` (443) and proxies to the
+  # web process, and every URL Mastodon advertises has to be the one a peer can
+  # actually dial. ActivityPub ids are https in development either way; this
+  # makes WebFinger and the HTML links agree with them.
+  LOCAL_HTTPS: "true"
   # A disposable database: migrations are allowed to run against it.
   DISABLE_DATABASE_ENVIRONMENT_CHECK: "1"
   ES_ENABLED: "false"
@@ -148,11 +152,12 @@ services:
       - -p
       # Port 80, not 3000: Mastodon builds every actor, inbox and status URL
       # from WEB_DOMAIN, which cannot carry a port, so the address it advertises
-      # to peers is http://mastodon.local/... . Serving the app on 80 inside the
-      # network makes that advertisement real; the origin posts a Follow to the
-      # shared inbox it was told about, and port 80 is where that lands. The
-      # image runs as uid 991 and docker already sets
-      # net.ipv4.ip_unprivileged_port_start=0, so binding 80 needs no
+      # to peers is https://mastodon.local/... (ActivityPub ids are https even
+      # in development). Serving the app on 80 inside the network makes that
+      # advertisement real behind Caddy, which owns `mastodon.local` on 443 and
+      # proxies here; the origin posts a Follow to the shared inbox it was told
+      # about and lands on 80. The image runs as uid 991 and docker already
+      # sets net.ipv4.ip_unprivileged_port_start=0, so binding 80 needs no
       # capability.
       - "80"
       - -b
@@ -164,10 +169,12 @@ services:
       # and not in the wrapper because `docker exec` inherits this environment, not a
       # shell's exports — the container checks in docs/peers.md depend on that.
       SSL_CERT_FILE: /tmp/nodus-lab-ca-bundle.crt
+    # No `mastodon.local` alias: the name belongs to Caddy on :443 (the
+    # Caddyfile's peer site blocks), and a second container answering to it
+    # would make the name resolve to two addresses on `nodus-lab`. Peers reach
+    # this service as `mastodon:80`, which compose already publishes.
     networks:
-      default:
-        aliases:
-          - mastodon.local
+      default: {}
     # Optional: the peer UI is not needed for federation. With this published,
     # a browser that maps `127.0.0.1 mastodon.local` can load
     # http://mastodon.local:18081. Mastodon's canonical URLs still carry no
@@ -290,27 +297,23 @@ services:
       DATABASE_DB: misskey
       DATABASE_USER: misskey
       DATABASE_PASSWORD: ${MISSKEY_DB_PASSWORD:?run peers.sh up}
-      # Misskey hardcodes https for webfinger unless this is set; the lab's
-      # origin and peers are plain HTTP.
-      MISSKEY_WEBFINGER_USE_HTTP: "true"
       # `checkHttps` (packages/backend/src/misc/check-https.ts) refuses any
       # ActivityPub id that is not https unless NODE_ENV is not "production":
       #   return url.startsWith('https://') || (url.startsWith('http://') && process.env.NODE_ENV !== 'production')
-      # The lab's origin is http://nodus:8080, so a production-mode peer cannot
-      # dereference a single one of its notes. Development mode is the peer's
-      # own escape hatch and is lab-only; production peers keep the default.
+      # Its `url` is https now, so this is no longer load-bearing for the lab's
+      # ids; it stays development so a peer keeps the same diagnostics as the
+      # Mastodon next to it. Production peers keep the default.
       NODE_ENV: development
       # Node appends this file to its built-in store, so both undici's fetch and
       # any tls.connect client verify the origin's internal-CA certificate.
       NODE_EXTRA_CA_CERTS: /certs/nodus-lab-ca.crt
+    # No `misskey.local` alias: Caddy owns the name on :443 and proxies here
+    # (Caddyfile, peer site blocks). The service answers as `misskey:18082`.
     networks:
-      default:
-        aliases:
-          - misskey.local
-    # Misskey's canonical URL carries the published port so the UI is usable
-    # from the host once `127.0.0.1 misskey.local` is in the hosts file. The
-    # container listens on the same port inside the network, so peers can
-    # dereference actors without a second listener.
+      default: {}
+    # Misskey's canonical URL is https://misskey.local, which Caddy serves; the
+    # published port is only the host-side UI, where the container still
+    # listens on 18082 directly.
     ports:
       - "127.0.0.1:18082:18082"
     volumes:

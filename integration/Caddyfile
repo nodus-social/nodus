@@ -131,3 +131,27 @@ https://nodus:443 {
 	tls internal
 	import routes
 }
+
+# The peers have the mirror-image gap. Each publishes an origin it does not itself serve on
+# 443: Mastodon hard-codes `https` in every ActivityPub id (`ActivityPub::TagManager#uri_for`)
+# and builds every other URL from `WEB_DOMAIN`, which cannot carry a port; Misskey builds all
+# of them from its `url`. Both answer plain http on their own listen port, so the origin
+# cannot fetch a key document from either name until something terminates TLS for it.
+# Caddy owns the two names on the `nodus-lab` network and proxies to the port each peer
+# really listens on: Mastodon on 80 (see compose.peers.yml, `rails server -p 80`) and
+# Misskey on 18082 (peers/misskey/default.yml, `port`).
+#
+# These blocks deliberately do not `import routes`: the route table is the origin's, and a
+# peer name must never resolve an origin path. Like the origin's 443 site, they are not
+# published on the host — peers dial them by container name.
+https://mastodon.local {
+	tls internal
+	encode zstd gzip
+	reverse_proxy mastodon:80
+}
+
+https://misskey.local {
+	tls internal
+	encode zstd gzip
+	reverse_proxy misskey:18082
+}

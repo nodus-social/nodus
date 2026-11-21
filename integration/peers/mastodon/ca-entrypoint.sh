@@ -8,5 +8,5 @@
 # compose.peers.yml, because `docker exec` inherits the container's configured
 # environment, not this shell's exports.
 set -eu
-cat /etc/ssl/certs/ca-certificates.crt /certs/nodus-lab-ca.crt > /tmp/nodus-lab-ca-bundle.crt
+cat /etc/ssl/certs/ca-certificates.crt /certs/nodus-lab-ca.crt >/tmp/nodus-lab-ca-bundle.crt
 exec "$@"

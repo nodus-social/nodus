@@ -375,12 +375,11 @@ check_nodus_to_mastodon() {
     fi
 
     printf -- '-- resolve by actor URL\n'
-    # The canonical actor URL, on port 80: Mastodon advertises its identity from
-    # WEB_DOMAIN, which cannot carry a port, and compose.peers.yml serves the
-    # peer on 80 inside the network. A bare handle makes the origin's WebFinger
-    # probe the same port-80 address, so the actor URL is the shorter path and
-    # is what the proof used.
-    search=$(nodus_api GET "/api/v2/search?q=http%3A%2F%2Fmastodon.local%2Fusers%2F$MASTODON_ACCOUNT&resolve=true" "$token")
+    # The canonical actor URL: Mastodon advertises its identity from WEB_DOMAIN,
+    # which cannot carry a port, and every ActivityPub id it emits is https. Caddy
+    # owns `mastodon.local` on 443 and proxies to the web process, so this is the
+    # address the origin really fetches.
+    search=$(nodus_api GET "/api/v2/search?q=https%3A%2F%2Fmastodon.local%2Fusers%2F$MASTODON_ACCOUNT&resolve=true" "$token")
     printf '%s\n' "$search"
     account_id=$(printf '%s' "$search" | json_body | jq -r '.accounts[0].id // empty')
 
@@ -417,10 +416,10 @@ check_mastodon_to_nodus() {
 
     printf -- '-- resolve by actor URL\n'
     # Mastodon's WebFinger builds `https://<domain>` for every domain that is not
-    # `.onion` (`app/lib/webfinger.rb`, `standard_url`), so `@ada@nodus` cannot be
-    # resolved without TLS on the origin. The actor URL goes straight to the
-    # resolver and never reaches WebFinger; the port is the origin's own :8080.
-    search=$(mastodon_api GET '/api/v2/search?q=http%3A%2F%2Fnodus%3A8080%2Fusers%2Fada&resolve=true&type=accounts' "$token")
+    # `.onion` (`app/lib/webfinger.rb`, `standard_url`), which is what the origin
+    # answers on 443. The actor URL goes straight to the resolver and never
+    # reaches WebFinger.
+    search=$(mastodon_api GET '/api/v2/search?q=https%3A%2F%2Fnodus%2Fusers%2Fada&resolve=true&type=accounts' "$token")
     printf '%s\n' "$search"
     account_id=$(printf '%s' "$search" | json_body | jq -r '.accounts[0].id // empty')
 
@@ -456,11 +455,10 @@ check_misskey_to_nodus() {
     token=$(jq -r .token "$STATE_DIR/misskey-account.json")
 
     printf -- '-- resolve by actor URL via ap/show\n'
-    # Misskey forces WebFinger to http (MISSKEY_WEBFINGER_USE_HTTP=true), but the
-    # domain it would dial is `nodus` with no port, and nothing answers on 80 of
-    # the origin. ap/show takes the actor URL the origin publishes, port and all.
+    # WebFinger for `nodus` builds https://nodus, which Caddy answers on 443;
+    # ap/show takes the actor URL the origin publishes and skips discovery.
     response=$(misskey_api ap/show "$token" \
-        "$(jq -nc '{uri: "http://nodus:8080/users/ada"}')")
+        "$(jq -nc '{uri: "https://nodus/users/ada"}')")
     printf '%s\n' "$response"
     user_id=$(printf '%s' "$response" | json_body | jq -r '.object.id // empty')
 
@@ -482,8 +480,8 @@ check_misskey_to_nodus() {
 
     printf -- '-- react to a nodus note\n'
     # The note is dereferenced by its ActivityPub id, which is not the Mastodon-API
-    # `uri`: the origin serves `http://nodus:8080/@ada/<id>` as HTML even for an
-    # ActivityPub Accept header, and only `http://nodus:8080/statuses/<id>` is the
+    # `uri`: the origin serves `https://nodus/@ada/<id>` as HTML even for an
+    # ActivityPub Accept header, and only `https://nodus/statuses/<id>` is the
     # object `/users/ada/outbox` lists. A fresh note is posted so the check never
     # depends on a home timeline that has nothing in it.
     note_status=$(nodus_api POST '/api/v1/statuses' "$(nodus_token)" \
@@ -493,7 +491,7 @@ check_misskey_to_nodus() {
     printf 'nodus note id: %s\n' "$note_address"
     [ -n "$note_address" ] || return 1
     response=$(misskey_api ap/show "$token" \
-        "$(jq -nc --arg uri "http://nodus:8080/statuses/$note_address" '{uri: $uri}')")
+        "$(jq -nc --arg uri "https://nodus/statuses/$note_address" '{uri: $uri}')")
     printf '%s\n' "$response"
     note_id=$(printf '%s' "$response" | json_body | jq -r '.object.id // empty')
     [ -n "$note_id" ] || {
