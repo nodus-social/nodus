@@ -210,16 +210,33 @@ reclaim_workspace() {
 # (`integration/scripts/up.sh`) holds 18080/18443 on this host, which is why
 # the workflow uses a pair of its own; if something else sits on the CI pair,
 # say which port and what usually owns it instead of letting dind surface it.
+port_holders() {
+    ss -ltnH "sport = :$1" 2>/dev/null | awk '{print $4}' | paste -sd' ' -
+}
+
 require_free_lab_ports() {
     local port holders
     command -v ss >/dev/null || {
         printf 'ci.sh: ss not found; skipping the lab port preflight\n' >&2
         return 0
     }
+    # The job has no teardown, so a finished run leaves its lab stack up on the
+    # dind daemon still publishing this pair. That daemon is ci.sh's own
+    # scratch space: drop those containers first, then judge whatever remains.
+    if [ -n "$(port_holders "$LAB_HTTP_PORT")$(port_holders "$LAB_HTTPS_PORT")" ]; then
+        local stale
+        stale=$(docker -H "$DIND_HOST" ps -aq \
+            --filter label=com.docker.compose.project=nodus-lab 2>/dev/null || true)
+        if [ -n "$stale" ]; then
+            # shellcheck disable=SC2086 # one container id per line
+            docker -H "$DIND_HOST" rm -f $stale >/dev/null
+            printf 'removed %s container(s) left in dind by an earlier lab run\n' \
+                "$(printf '%s\n' "$stale" | wc -l)"
+        fi
+    fi
     for port in "$LAB_HTTP_PORT" "$LAB_HTTPS_PORT"; do
         [ -n "$port" ] || continue
-        holders=$(ss -ltnH "sport = :${port}" 2>/dev/null | awk '{print $4}' |
-            paste -sd' ' -)
+        holders=$(port_holders "$port")
         [ -n "$holders" ] || continue
         die "port ${port} is already in use (${holders}); the lab job publishes it and dind shares the host network, so compose cannot bind it. Stop what holds it (a developer lab: integration/scripts/down.sh), or move the CI pair in the workflow env."
     done
