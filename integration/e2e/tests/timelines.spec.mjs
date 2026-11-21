@@ -15,13 +15,15 @@ import { navigate } from '../helpers/navigation.mjs';
 import { API_BASE, signIn } from '../helpers/session.mjs';
 
 // The seeded Home timeline is covered by home.spec.mjs. What this row adds is
-// the Local tab's copy: the posts render but the caption
-// `web/crates/route/src/route/mod.rs` defines for that tab does not
-// (integration/docs/e2e-gaps.md). The Federated tab used to be part of this
-// fixme; it now serves the federation, and federation.spec.mjs covers it
-// (`the federated timeline shows a peer-authored post`), so the row names only
-// what is still broken.
-test.fixme('the Local tab renders no caption', async ({ page }) => {
+// the Local tab's own copy: the caption `copy` in
+// `web/crates/route/src/route/mod.rs` defines for that kind, the local posts,
+// and the switch back. Local is one of the four primary timelines, so the
+// composer and the tab strip stay on screen there (`TimelineHeader` in
+// `web/crates/web-client/src/routes/home/header/mod.rs`) — without them the
+// reader who arrives on Local has no tab to leave by.
+test('the Local tab paints its caption, the local posts and the switch back', async ({
+  page,
+}) => {
   await signIn(page, ACCOUNTS.ada);
 
   // Ada follows both seeded authors, so both posts are on Home.
@@ -33,10 +35,21 @@ test.fixme('the Local tab renders no caption', async ({ page }) => {
   await expect(page.getByText('Posts from this instance.')).toBeVisible();
   await expect(page.getByText(POSTS.graceFirst)).toBeVisible();
   await expect(page.getByText(POSTS.adminFirst)).toBeVisible();
+
+  // Local is still a primary timeline: the strip that brought the reader here
+  // is on the page, so Home is one click away again.
+  await page.getByRole('tab', { name: 'Home' }).click();
+  await page.waitForURL(/\/home$/);
+  await expect(page.getByText(POSTS.adminFirst)).toBeVisible();
 });
 
-// POST /api/v1/accounts/:id/unfollow returns non-2xx at this build, so the
-// state this row arranges through the API never exists. Owner: API.
+// POST /api/v1/accounts/:id/unfollow answers 404 `no route for POST
+// /api/v1/accounts/{id}/unfollow` at this build: nodus-backend mounts the
+// handler as DELETE `/api/v1/accounts/{id}/follow` only
+// (nodus-backend crates/api/src/lib.rs:99-102), while the pinned client posts
+// to `.../unfollow` (sdk crates/mastodon/src/rest/api/mod.rs:118-120). The
+// edge this row wants cannot be removed, so the state never exists. Owner:
+// `server` accounts API — integration/docs/e2e-gaps.md has the one-line fix.
 test.fixme(
   'unfollow returns non-2xx, so the edge cannot be removed through the API',
   async ({ page, browser }) => {

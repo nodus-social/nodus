@@ -67,13 +67,23 @@ The login form accepts the credentials, the consent page appears, but the
 callback never returns to `/home`; the same helper works from a fresh
 context. Owner: `web-client` OAuth handoff.
 
-## The Local timeline renders no caption
+## Closed: the Local timeline lost its header, not its caption
 
-`tests/timelines.spec.mjs` keeps its Local row in `test.fixme` because the Local
-tab paints neither the "Posts from this instance." caption that
-`web/crates/route/src/route/mod.rs` defines nor the post copy the row checks.
-The posts themselves render, and the Federated half of that row now passes, so
-the fixme names the caption only. Owner: `web-client` feed page.
+The caption was never the missing half. `copy` in
+`web/crates/route/src/route/mod.rs` hands `TimelineScreen` a sentence per
+`TimelineKind`, and `FeedPage` paints it through `PageHeader`; Local reached the
+dom with "Posts from this instance." all along. What Local did lose was the
+block above it: `web/crates/web-client/src/app.rs` had an arm for `Route::Home`
+only, so `/home/local` and `/home/federated` fell through to the generic
+`route if signed_in` arm and `RouteView` was built with no `header` slot — no
+inline composer, and no tab strip, so a reader who clicked Local had no tab to
+leave by (the old spec said as much: "the tab strip only exists on /home").
+`LocalTimeline` and `FederatedTimeline` existed in
+`web/crates/web-client/src/routes/home/mod.rs` and were never dispatched to.
+Closed by giving both routes their own arm in `app.rs`; covered by
+`tests/timelines.spec.mjs` (`the Local tab paints its caption, the local posts
+and the switch back`), which is red at the previous build on the tab it asks
+for after Local and green with the arm.
 
 ## Unfollow returns non-2xx
 
