@@ -191,12 +191,17 @@ services:
       - ./peers/mastodon/letter_opener_web_shim.rb:/opt/mastodon/config/initializers/0_letter_opener_web_shim.rb:ro
       # Caddy's internal root, and the wrapper that folds it into a copy of the
       # image's system bundle before Rails starts. See "TLS in the lab".
-      - ./peers/ca/nodus-lab-ca.crt:/certs/nodus-lab-ca.crt:ro
+      - ./state/ca/nodus-lab-ca.crt:/certs/nodus-lab-ca.crt:ro
       - ./peers/mastodon/ca-entrypoint.sh:/opt/mastodon/bin/lab-ca-entrypoint.sh:ro
     depends_on:
       mastodon-setup:
         condition: service_completed_successfully
       mastodon-redis:
+        condition: service_healthy
+      # The trust bundle these processes build at start contains caddy's root,
+      # so the file has to be there (and be the current one) before they are
+      # created: up.sh exports it before caddy reports healthy.
+      caddy:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS localhost/health | grep -q OK"]
@@ -219,12 +224,17 @@ services:
     volumes:
       - mastodon-system:/mastodon/public/system
       - ./peers/mastodon/letter_opener_web_shim.rb:/opt/mastodon/config/initializers/0_letter_opener_web_shim.rb:ro
-      - ./peers/ca/nodus-lab-ca.crt:/certs/nodus-lab-ca.crt:ro
+      - ./state/ca/nodus-lab-ca.crt:/certs/nodus-lab-ca.crt:ro
       - ./peers/mastodon/ca-entrypoint.sh:/opt/mastodon/bin/lab-ca-entrypoint.sh:ro
     depends_on:
       mastodon-setup:
         condition: service_completed_successfully
       mastodon-redis:
+        condition: service_healthy
+      # The trust bundle these processes build at start contains caddy's root,
+      # so the file has to be there (and be the current one) before they are
+      # created: up.sh exports it before caddy reports healthy.
+      caddy:
         condition: service_healthy
 
   # -------------------------------------------------------------------------
@@ -318,7 +328,7 @@ services:
       - "127.0.0.1:18082:18082"
     volumes:
       - ./peers/misskey:/misskey/.config:ro
-      - ./peers/ca/nodus-lab-ca.crt:/certs/nodus-lab-ca.crt:ro
+      - ./state/ca/nodus-lab-ca.crt:/certs/nodus-lab-ca.crt:ro
       - misskey-files:/misskey/files
     depends_on:
       misskey-db:
@@ -327,6 +337,10 @@ services:
         condition: service_healthy
       misskey-files-init:
         condition: service_completed_successfully
+      # NODE_EXTRA_CA_CERTS is read at start, so the export has to predate this
+      # container; up.sh does that before caddy reports healthy.
+      caddy:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS localhost:18082/healthz >/dev/null"]
       interval: 10s

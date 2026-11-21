@@ -123,10 +123,10 @@
 # on 443, which is the port both of them dial.
 #
 # `tls internal` is Caddy's own CA: the lab has no internet-facing name and cannot use
-# ACME. The root of that CA is committed at peers/ca/root.crt and trusted inside the
-# Mastodon and Misskey containers (see docs/peers.md, "TLS in the lab"). The authority
-# lives on the nodus-data volume under /var/lib/nodus/caddy, so it survives a restart but
-# not a `reset.sh`; the extracted root has to be re-taken after a reset.
+# ACME. The authority lives on the nodus-data volume under /var/lib/nodus/caddy, so it
+# survives a restart but not a `reset.sh`; scripts/ca.sh exports its root to the generated
+# state/ca/nodus-lab-ca.crt, which the API and both peers mount (docs/peers.md, "TLS in
+# the lab"). Nothing about it is committed: every reset mints a new authority.
 https://nodus:443 {
 	tls internal
 	import routes

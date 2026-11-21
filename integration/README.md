@@ -51,6 +51,32 @@ checkout's `compose.yml` (it inspects
 `--project-name nodus-lab`. There is no `docker compose down -v` in the scripts:
 the only destructive command is `compose down --volumes` behind that guard.
 
+## The lab CA
+
+Caddy terminates TLS for `nodus`, `mastodon.test` and `misskey.test` with its own
+internal authority. The authority lives on the `nodus-data` volume, which
+`reset.sh` drops, so every reset mints a **new** root: same subject
+(`CN=Caddy Local Authority - 2026 ECC Root`), different key. The root is
+therefore generated, never committed, at `integration/state/ca/nodus-lab-ca.crt`
+(git-ignored), and the only thing that writes it is:
+
+```sh
+integration/scripts/ca.sh export    # reads /var/lib/nodus/caddy/pki/authorities/local/root.crt
+integration/scripts/ca.sh require   # fails unless the file is caddy's current root
+```
+
+`up.sh` starts caddy alone first, exports the root, and only then creates the API,
+the workers and (through `peers.sh up`) the two peers, because all of them build
+their trust bundle from that file at start. No manual copying is part of any
+workflow.
+
+When trust breaks — `BadSignature` in `nodus-api` fetching `https://mastodon.test`,
+or a peer that cannot deliver to the origin — re-run `up.sh` (and `peers.sh up`),
+or with the core lab already running, `ca.sh export` and restart `nodus-lab-api`
+and the peers. A restart is needed because the bundles are built once at start;
+this is also why a `reset.sh` right after a CA change needs the peers restarted.
+`docs/peers.md` ("The internal CA", "When trust breaks") has the full chain.
+
 ## Ports, URLs, credentials
 
 | what | value |

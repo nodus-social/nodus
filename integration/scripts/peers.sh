@@ -544,6 +544,11 @@ cmd_up() {
         printf 'core lab network %s is missing; starting the core stack\n' "$PROJECT"
         "$SCRIPT_DIR/up.sh" --skip-build
     fi
+    # Mastodon and Misskey build their trust bundle at start from the lab CA.
+    # Refusing here, rather than letting them verify against a root caddy no
+    # longer signs with, turns a BadSignature at delivery time into one message
+    # naming the command that fixes it.
+    "$SCRIPT_DIR/ca.sh" require
     printf 'starting peers\n'
     peer_compose up -d
     if ! wait_for_url "$MASTODON_URL/health" 300; then

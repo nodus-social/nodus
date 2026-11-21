@@ -68,7 +68,9 @@ x-nodus-service: &nodus-service
   environment: *nodus-environment
   volumes:
     - nodus-data:/var/lib/nodus
-    - ./peers/ca/nodus-lab-ca.crt:/certs/nodus-lab-ca.crt:ro
+    # Generated per stack by scripts/ca.sh, never committed: caddy mints a new
+    # authority whenever reset.sh drops nodus-data, so this file follows it.
+    - ./state/ca/nodus-lab-ca.crt:/certs/nodus-lab-ca.crt:ro
     - ./peers/ca/nodus-ca-entrypoint.sh:/opt/nodus/bin/lab-ca-entrypoint.sh:ro
   depends_on:
     postgres:

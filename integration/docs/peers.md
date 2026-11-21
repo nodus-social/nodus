@@ -108,18 +108,51 @@ host**: `compose.yml` only `expose`s it, because peers reach Caddy by container 
 ### The internal CA
 
 `tls internal` makes Caddy sign with its own CA — the lab has no internet-facing name and
-cannot use ACME. The root lives on the `nodus-data` volume:
+cannot use ACME. The authority itself lives on the `nodus-data` volume:
 
 ```sh
 docker exec nodus-lab-caddy cat /var/lib/nodus/caddy/pki/authorities/local/root.crt
 ```
 
-`peers/ca/nodus-lab-ca.crt` in this repo is a copy of that root (subject
-`CN=Caddy Local Authority - 2026 ECC Root`). It is a **throwaway lab CA**: generated per
-lab, not a secret, of no value to anyone. It survives `docker compose restart caddy`, but
-`reset.sh` drops `nodus-data` and the authority is regenerated on the next start — after
-that the committed copy no longer verifies, so re-take it with the command above and
-recreate the peers.
+Because it is minted per stack, its root is **generated, never committed**. One script
+produces the copy everything else mounts, and it always reads the root from the running
+caddy:
+
+```sh
+integration/scripts/ca.sh export    # writes integration/state/ca/nodus-lab-ca.crt
+integration/scripts/ca.sh require   # fails unless that file is caddy's current root
+```
+
+`up.sh` starts caddy alone (`docker compose up -d --no-deps caddy`), calls `ca.sh export`,
+and only then creates the rest of the stack: the API and both peers read the root at start,
+so the file has to exist first. `caddy` cannot simply be a `depends_on` of `nodus-api`,
+because caddy already waits on the API's healthcheck and the pair would be a cycle.
+
+The exported file is git-ignored (`integration/state/` is generated state) and is a
+**throwaway lab CA**: regenerated per lab, not a secret, of no value to anyone. It survives
+`docker compose restart caddy`, but `reset.sh` drops `nodus-data` and the next start mints
+a new authority with the same subject and a different key.
+
+### When trust breaks
+
+The symptom is a TLS failure between the lab and a peer — `BadSignature` in `nodus-api`
+when it fetches `https://mastodon.test`, or Mastodon failing to deliver — after a reset.
+Re-run:
+
+```sh
+integration/scripts/up.sh && integration/scripts/peers.sh up
+# or, with the core lab already running:
+integration/scripts/ca.sh export
+docker restart nodus-lab-api nodus-lab-media-worker nodus-lab-feed \
+  nodus-lab-scan nodus-lab-prune nodus-lab-calc \
+  nodus-lab-mastodon nodus-lab-mastodon-sidekiq nodus-lab-misskey
+```
+
+A restart is required because every one of those processes builds its trust bundle from the
+lab root at start and keeps it for its lifetime. That is also why a reset immediately after a
+CA change — a `reset.sh` while the peers are still running — needs the peers restarted
+before they can trust the origin again; `peers.sh up` recreates them, so it is enough after
+`up.sh` has exported the fresh root.
 
 ### How each peer trusts it
 
