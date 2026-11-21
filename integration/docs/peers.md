@@ -357,6 +357,15 @@ backend code changed for this run.
 `integration/scripts/peers.sh follow` exits 0; the results below are the literal
 output of that run plus the follow-up queries.
 
+These proofs need the peer stack. A run that starts only the origin —
+`scripts/up.sh` then `scripts/seed.sh`, which is CI's default push/PR path — has
+no remote account stored, so `integration/e2e/tests/federation.spec.mjs` and
+`federation-visual.spec.mjs` skip themselves with that reason instead of
+passing or failing, and their rows are missing from a peer-free run. The guard
+probes the origin's store rather than an environment variable, so `peers.sh up`
+restores them without anyone flipping a flag; CI's `workflow_dispatch` input
+`peers: true` does that before the suite runs.
+
 Reachability, from the origin's own container:
 
 ```sh
