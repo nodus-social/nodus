@@ -533,7 +533,7 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
 #  {"id":"01m7y5avpp44m68wpwb3tfsdct","content":"<p>hello from mastodon.test, inbound create check</p>"}]
 ```
 
-### (c) Misskey → nodus: follow and Like accepted; reaction not stored — **partial, with a residual**
+### (c) Misskey → nodus: follow, Like and EmojiReact stored and retracted — **passes**
 
 Addressing, note dereference and the follow all work; the delivery from Misskey
 first came back `401` for a reason that is *not* the host rule:
@@ -560,44 +560,69 @@ curl -sS -H "authorization: Bearer $TOKEN" \
 #                   "url":"https://misskey.test/users/attgqpslu33y0002"}],...}
 ```
 
-After that, the same `peers.sh follow` run:
+After that, `peers.sh follow`, then a reaction from Misskey alice
+(`attx7i5mge0l0005`) to ada's status `01m7yzm1246m1smpm7pwa5w8ha`:
 
 ```sh
-POST /api/ap/show {"uri":"https://nodus.test/users/ada"}
-# HTTP 200 {"type":"User","object":{"id":"attgr0q8u33y0003","host":"nodus.test",
-#            "uri":"https://nodus.test/users/ada"}}
-POST /api/following/create {"userId":"attgr0q8u33y0003"}
-# HTTP 200
-POST /api/ap/show {"uri":"https://nodus.test/statuses/01m7y5hwj9dy41dn99nya8tmjw"}
-# HTTP 200 {"type":"Note","object":{...,"uri":"https://nodus.test/statuses/01m7y5hwj9dy41dn99nya8tmjw"}}
-POST /api/notes/reactions/create {"noteId":"attgwr9su33y0009","reaction":"👍"}
+POST /api/ap/show {"uri":"https://nodus.test/statuses/01m7yzm1246m1smpm7pwa5w8ha"}
+# HTTP 200 {"type":"Note","object":{...,"id":"attx6ljsug1f0001"}}
+POST /api/notes/reactions/create {"noteId":"attx6ljsug1f0001","reaction":"👍"}
 # HTTP 204
-nodus reactions before: []
-nodus reactions after:  []
-
 docker logs nodus-lab-api --since 30m | grep 'accepted inbound'
-# accepted inbound activity kind=Follow actor=https://misskey.test/users/attgqpslu33y0002
-# accepted inbound activity kind=Like   actor=https://misskey.test/users/attgqpslu33y0002
+# accepted inbound activity kind=Like actor=https://misskey.test/users/attx7i5mge0l0005
 ```
 
-The `Follow` is stored (the account is a follower), but the `Like` produces no
-favourite and `status_reaction` stays empty:
+Read back with ada's token, before the call and after it:
 
-- ActivityPub `Like` is mapped to a favourite (`crates/api/src/activitypub.rs:468`
-  → `like_local`, `:1129`), not to `status_reaction`; `status_reaction` is
-  written only by the Misskey-compatible reactions API.
-- `like_local` resolves its target with `statuses::by_uri`
-  (`crates/store/src/statuses.rs:191-198`), which matches `status.uri`; local
-  rows have a null `uri`, so a `Like` aimed at `https://nodus.test/statuses/<id>`
-  finds nothing and returns `Ok`. `status_for_uri`/`local_status_id`
-  (`crates/api/src/poll_votes.rs:125-139`) already handle both spellings, but
-  `like_local`/`boost_local` do not use them. Mastodon has the same result: it
-  reports `{"favourited":true}` for a nodus post while nodus stores no
-  peer-authored favourite.
-- Misskey renders `Like` with `content` (its emoji) rather than `EmojiReact`,
-  and `EmojiReact` is not an `ActivityKind`
-  (`crates/activitypub-core/src/activity.rs:71-89`), so there is no inbound path
-  that would create an emoji reaction row either.
+```sh
+GET /api/v1/statuses/01m7yzm1246m1smpm7pwa5w8ha
+# before: favourites_count 0, favourited false
+# after:  favourites_count 0, favourited false   (a Like *with* content is a reaction)
+GET /api/v1/statuses/01m7yzm1246m1smpm7pwa5w8ha/reactions
+# before: []
+# after:  [{"reaction":"👍","count":1}]
+POST /api/notes/reactions/delete {"noteId":"attx6ljsug1f0001"}
+# HTTP 204
+GET .../reactions
+# []
+```
+
+A `Like` without `content` — what Mastodon sends — is the favourite case and
+moves `favourites_count` too (mastodon.test alice on the same post):
+
+```sh
+POST /api/v1/statuses/117654315584463965/favourite
+# {"favourited":true,"favourites_count":1}
+GET /api/v1/statuses/01m7yzm1246m1smpm7pwa5w8ha      # favourites_count 1
+GET /api/v1/statuses/01m7yzm1246m1smpm7pwa5w8ha/reactions
+# [{"reaction":"⭐","count":1},{"reaction":"👍","count":1}]
+POST /api/v1/statuses/117654315584463965/unfavourite
+# {"favourited":false,"favourites_count":0}
+# then: favourites_count 0, reactions []
+```
+
+How it lands (owner: `server` federation, `nodus-backend` `61e462d`):
+
+- `ActivityKind::Like` → `react_local` (`crates/api/src/activitypub.rs:455-458`,
+  `:1179`), which resolves the target with `reaction_status` (`:1155-1167`):
+  `statuses::by_uri` first, then the instance's own `/statuses/<id>` spelling,
+  so a post this instance minted (a null `uri`) is found instead of dropped.
+- The glyph is `reaction_glyph` (`:1170-1177`): a `Like` with `content` is
+  parsed as a Misskey reaction and stored as that emoji; a `Like` without is
+  stored as `FAVOURITE_REACTION` (`:1144`) and passed through
+  `social::favourite` (`:1202-1206`), so `favourites_count` moves as well.
+- An inbound `EmojiReact`, which the SDK's parser does not know, is shaped into a
+  `Like` carrying its glyph before signature verification
+  (`emoji_react_activity`, `:516`), so the same path stores it.
+- `Undo(Like)` and `Undo(EmojiReact)` reach `undo_reaction` (`:1224`, `:1252`):
+  the reaction row goes, and a contentless `Like` takes the favourite row with
+  it.
+- The guards are unchanged: only a post this instance minted (`row.local`), only
+  an actor that could open it (`can_view_for_viewer`), and a suspended actor's
+  activity is dropped upstream.
+
+The remaining gap in this direction is item 1 below: a cold inbound delivery
+still needs the actor resolved once outbound.
 
 ### (d) A peer post in the lab shell — **the data is served; the HTML is a SPA**
 
@@ -711,10 +736,12 @@ re-resolved fresh for this run, which is what makes (b)'s `uri` value evidence.
 
 ## Recreating the origin changes its address, and Misskey caches it
 
-## What would close the remaining gap
+## What is left
 
-The domain-name blocker is closed by this run (the peers are `.test`). What is
-left is backend work, listed in the order it shows up:
+The domain-name blocker is closed by this run (the peers are `.test`). The
+reaction gap in (c) is closed too (`61e462d`: a peer `Like` stores the reaction
+and the favourite; an `EmojiReact` is stored as its glyph). One backend gap
+remains:
 
 1. **Let `NODUS_ALLOW_PRIVATE_HOSTS` reach the inbound key fetch too.** The
    ActivityPub client's `SafeDnsResolver`
@@ -723,11 +750,6 @@ left is backend work, listed in the order it shows up:
    bridge is `401` until the origin has resolved that actor outbound. The lab
    works around it by priming the actor (`peers.sh follow` does), but the
    resolver should honour the same allowlist as `crates/api/src/remote.rs`.
-2. Make `like_local`/`boost_local` resolve local targets with `status_for_uri`
-   (`crates/api/src/poll_votes.rs:125-139`) so an accepted `Like` lands on a
-   local post instead of being dropped after a `by_uri` miss.
-3. Decide whether `EmojiReact` should be a first-class `ActivityKind` with a
-   reaction table, or whether Misskey's `Like`+`content` is enough.
 
 ## Commands used
 

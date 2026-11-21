@@ -49,12 +49,28 @@ after delivery  count=1  list=2   (01m7zvcx6aess9p66cv3enaqmf)
 after delete    count=0  list=1
 ```
 
-The pair moves together in both directions. The residual `0` against `1` is the
-row this lab stored before the fix (12:01 that day; `a4e0281` landed 20:43):
-the counter moves with the insert that follows it, and nothing backfills rows
-already stored, so an instance upgraded with peer rows keeps the old number
-until each of those rows is re-inserted. A fresh database — what the CI lab
-starts from — counts from the first delivery.
+The pair moves together in both directions. Rows this lab stored before the fix
+(12:01 that day; `a4e0281` landed 20:43) were the residual: the counter moves
+with the insert that follows it, so an upgraded instance kept the old number.
+Migration `0054` (`crates/store/migrations/0054_status_count_backfill.sql`, owner:
+`server` store, `1012787`) backfills them on boot by recomputing `count(*)` per
+account from the live rows and writing the absolute value, with a `<>` guard so
+a re-run is a no-op. Measured on the lab database at `alice@mastodon.test`
+(`01m7yznagw96czhm7tzaqyk8w6`): the database found by this run was already
+consistent (every row had been written by post-`a4e0281` code, and
+`_sqlx_migrations` held nothing above 53), so the pre-fix shape was staged —
+`update account set statuses_count = 0` with the live rows untouched — and the
+rebuilt API's boot applied the migration:
+
+```
+_sqlx_migrations before  max=53, no row for 54
+account row before       count=0  list=1
+_sqlx_migrations after   54 | status count backfill | t
+account row after        count=1  list=1
+```
+
+A fresh database — what the CI lab starts from — counts from the first delivery;
+an upgraded one now agrees with its list on the first boot after the migration.
 
 Known limitation, deliberate: a stored counter counts a status from a paused
 domain while the profile list hides it. `account_page`
@@ -117,51 +133,48 @@ Closed by giving both routes their own arm in `app.rs`; covered by
 and the switch back`), which is red at the previous build on the tab it asks
 for after Local and green with the arm.
 
-## Unfollow returns non-2xx
+At the pinned build the arm is not there yet: superproject `28aacc5` pins
+`web` `ff8afbb`, whose `crates/web-client/src/app.rs` has no `Route::Local` or
+`Route::Federated` arm, and `e01e34d` (the commit that adds them) is unpushed on
+the web submodule's local `main`. Rebuilt from the pins and run with
+`integration/scripts/e2e.sh --retries=0`, the row fails on all three devices:
+`/home/local` paints the heading, the caption and the posts, and no composer or
+tab strip, so `getByRole('tab', { name: 'Home' })` never resolves. The row needs
+a superproject `web` gitlink bump to `e01e34d` (pushed first) and no spec
+change. Owner: `web` client router; the pin lives in the superproject.
 
-`POST /api/v1/accounts/:id/unfollow` answers `404 {"error":"no route for
+## Closed: `POST /api/v1/accounts/{id}/unfollow` answered 404
+
+`POST /api/v1/accounts/:id/unfollow` answered `404 {"error":"no route for
 POST /api/v1/accounts/01m7yzkjfwhazsjs93hhxpdsax/unfollow"}` for Ada and the
-admin, so the follow edge cannot be removed through the API and the
-unfollow-visibility row has no state to arrange. Owner: `server` accounts API;
-not patched here because `nodus-backend` is owned elsewhere at this build.
+admin, so the follow edge could not be removed through the API. That body is
+axum's own fallback (`nodus-backend/crates/api/src/error.rs:114-121`,
+`not_found_fallback`): the handler existed, but `crates/api/src/lib.rs:99-102`
+mounted it only as `DELETE /api/v1/accounts/{id}/follow`, while the pinned
+client posts the Mastodon spelling (`sdk/crates/mastodon/src/rest/api/mod.rs:118-120`,
+`unfollow`). Owner: `server` accounts API.
 
-Measured against the lab with Ada's token (the edge exists: `GET
-/api/v1/accounts/relationships?id[]=<admin>` answers `"following": true`):
+Closed by `nodus-backend` `f4c2f99`, which mounts
+`.route("/api/v1/accounts/{id}/unfollow", post(accounts::unfollow))` next to the
+follow route, and `89f024b`, which makes the unfollow remove the author's posts
+from the reader's home timeline — the rows in `crates/store/src/social.rs` and
+the page cache in `crates/api/src/home.rs` — instead of leaving them to age out.
+Measured against the rebuilt lab (ada follows grace, grace had posted after the
+follow, and that post was first on ada's home):
 
 ```
-$ curl -i -X POST -H "Authorization: Bearer <ada token>" \
-    http://127.0.0.1:18080/api/v1/accounts/01m7yzkjfwhazsjs93hhxpdsax/unfollow
-HTTP/1.1 404 Not Found
-{"error":"no route for POST /api/v1/accounts/01m7yzkjfwhazsjs93hhxpdsax/unfollow"}
+POST /api/v1/accounts/01M7YZM0KN5V1STTJDR6D5EGAW/unfollow
+# HTTP 200 {"following":false,...}
+timeline_entry, ada x grace's post   1 -> 0
+valkey home:01M7YZM0JHJGGKPRF3Q9X3KDWQ   member removed
+GET /api/v1/timelines/home (read 1)   [admin, ada, ada]; grace's posts absent
+GET /api/v1/timelines/home (read 2, +2s)  the same three; purge post in 0 of 2 reads
 ```
 
-That body is axum's own fallback (`nodus-backend/crates/api/src/error.rs:114-121`,
-`not_found_fallback`), so the request reached the API router and the router has
-no such route: Caddy forwards `/api/*` straight to `nodus-api`
-(`integration/Caddyfile`, `@api` handle) and the shell never rewrites it, so
-this is not a `web` proxy defect.
+Rows and cache go together: the second read refills nothing, so the purged post
+does not come back. The purge takes the author's older posts with the new one
+(grace's two seeded posts left ada's home as well), which is the Mastodon
+behaviour: an unfollowed author has no posts on the reader's home timeline.
 
-The handler exists; only the method and the path differ. `nodus-backend`
-`crates/api/src/lib.rs:99-102` mounts it as
-
-```rust
-.route(
-    "/api/v1/accounts/{id}/follow",
-    post(accounts::follow).delete(accounts::unfollow),
-)
-```
-
-while the pinned client posts to `/api/v1/accounts/{id}/unfollow`
-(`sdk/crates/mastodon/src/rest/api/mod.rs:118-120`, `unfollow`), which is the
-Mastodon spelling of the same call. The handler itself is fine
-(`nodus-backend/crates/api/src/accounts.rs:379-391`).
-
-One-line fix (in `nodus-backend`, with `post` already imported there):
-
-```rust
-.route("/api/v1/accounts/{id}/unfollow", post(accounts::unfollow))
-```
-
-`tests/timelines.spec.mjs` keeps its row in `test.fixme` with that cause in the
-comment: the row ends by re-following through `POST .../follow`, which works,
-so the only thing that stops it is the missing route.
+`tests/timelines.spec.mjs:53` still carries its `test.fixme` with the old cause,
+now stale; the row can be un-skipped in a follow-up.
