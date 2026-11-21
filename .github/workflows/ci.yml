@@ -1,0 +1,241 @@
+# CI for nodus-social/nodus#42: the workspace tests and the deployed lab.
+#
+# EXPECTED TO BE RED until the nodus-backend fixes tracked in #42 are
+# committed and the superproject records them; the gitlinks below still carry
+# the broken scan crate. A red job that names its failures beats a green job
+# that hides them.
+#
+# Two Playwright suites, two origins, on purpose. integration/e2e drives Caddy
+# through LAB_BASE_URL. web/e2e serves `web/dist` EXTRACTED FROM THE BUILT WEB
+# IMAGE on 4173, because its specs hardcode 127.0.0.1:4173 and one stubs the
+# OAuth callback there. Both test a deployed artifact; do not "unify" the two
+# suites without editing those specs.
+#
+# Skips are counted in rows, not call sites: 8 call sites in web/e2e/tests
+# make 17 skipped rows across desktop/tablet/phone. skip-allowlist.json
+# explains each row and skip-policy.mjs enforces it from the JSON report.
+#
+# retries are 0 on the CLI for both suites, so a flake is a failure, not a
+# pass. `--locked` is deliberately absent from the builds (the committed
+# Cargo.lock predates the sdk pins); the advisory cargo metadata step keeps
+# the drift visible.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  LAB_HTTP_PORT: '18080'
+
+jobs:
+  preflight:
+    name: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: server-sdk gitlink matches what nodus-backend imports
+        run: |
+          expected=8baa97d61a10971ab8d609410c9bb226aef4a9bb
+          actual=$(git ls-tree HEAD -- server-sdk | awk '{print $3}')
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::server-sdk gitlink is ${actual:-missing}."
+            echo "nodus-backend needs ${expected}."
+            echo "integration/scripts/build.sh still overrides this pin"
+            echo "with SERVER_SDK_PIN. Commit the pin in the superproject;"
+            echo "tracked in nodus-social/nodus#42."
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: skip policy (source scan, advisory)
+        continue-on-error: true
+        run: node web/e2e/skip-policy.mjs --source-only
+
+      - name: Cargo.lock drift (advisory)
+        continue-on-error: true
+        working-directory: nodus-backend
+        # A cold runner registry makes --offline fail before it reaches the
+        # lock check, so this is a signal when the cache is warm, never a gate.
+        run: cargo metadata --locked --offline --format-version 1 > /dev/null
+
+  rust-tests:
+    name: rust-tests
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container: rust:1-bookworm
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      # Database-backed tests gate on DATABASE_URL. Leaving it unset would turn
+      # every one of them into a silent skip; the schema is migrated in-test.
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/postgres
+      NODUS_DATABASE_URL: postgres://postgres:postgres@postgres:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: nodus-backend
+          cache-on-failure: true
+          key: >-
+            ${{ hashFiles('nodus-backend/Cargo.lock',
+            'server-sdk/crates/*/Cargo.toml', 'sdk/**/Cargo.toml') }}
+
+      - name: cargo test --workspace
+        # The container is bookworm, so the deploy-only paths compile; there is
+        # nothing to exclude. Keep it that way: a workspace-wide green run.
+        working-directory: nodus-backend
+        run: cargo test --workspace
+
+  lab:
+    name: lab
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # build.sh materialises the context with `git archive <gitlink>`, so
+          # a shallow submodule clone can lack the pinned tree it needs.
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+            /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            web/e2e/package-lock.json
+            integration/e2e/package-lock.json
+
+      - name: cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: >-
+            playwright-${{ runner.os }}-${{
+            hashFiles('web/e2e/package-lock.json',
+            'integration/e2e/package-lock.json') }}
+
+      - name: install Playwright (both suites pin 1.65.0)
+        run: |
+          (cd web/e2e && npm ci --no-audit --no-fund)
+          (cd integration/e2e && npm ci --no-audit --no-fund)
+          (cd web/e2e && npx playwright install --with-deps chromium)
+
+      - name: point the lab at the CI port
+        run: |
+          cp integration/.env.example integration/.env
+          sed -i "s/^NODUS_HTTP_PORT=.*/NODUS_HTTP_PORT=${LAB_HTTP_PORT}/" \
+            integration/.env
+
+      - name: build the images and start the stack
+        # build.sh builds the images from the recorded gitlinks, then compose
+        # starts them and waits for health. Migrations run in nodus-api's boot.
+        run: integration/scripts/up.sh
+
+      - name: seed ada and grace
+        run: integration/scripts/seed.sh
+
+      - name: integration e2e (Caddy origin)
+        working-directory: integration/e2e
+        env:
+          LAB_BASE_URL: http://127.0.0.1:${{ env.LAB_HTTP_PORT }}
+        run: npx playwright test --retries=0
+
+      - name: extract the bundle from the built web image
+        # The artifact under test is the one baked into the image, not a fresh
+        # `trunk build` on the runner: this is #42's deployed build.
+        run: |
+          docker create --name ci-web nodus-lab/web:0.1.0
+          rm -rf web/dist
+          mkdir -p web/dist
+          docker cp ci-web:/srv/nodus/. web/dist
+          docker rm ci-web
+
+      - name: web e2e (bundle extracted from the image)
+        id: web-e2e
+        working-directory: web/e2e
+        env:
+          CI: '1'
+        run: npx playwright test --retries=0
+
+      - name: skip policy
+        if: always() && steps.web-e2e.outcome != 'skipped'
+        run: node web/e2e/skip-policy.mjs
+
+      - name: lab logs
+        if: failure()
+        run: |
+          docker compose --project-name nodus-lab \
+            --env-file integration/.env \
+            --file integration/compose.yml logs --no-color \
+            > lab-logs.txt || true
+
+      - name: upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lab-reports
+          retention-days: 14
+          if-no-files-found: ignore
+          path: |
+            web/e2e/playwright-report
+            web/e2e/test-results
+            integration/e2e/playwright-report
+            lab-logs.txt
+
+  gate:
+    name: ci/gate
+    if: always()
+    needs: [rust-tests, lab]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: fail unless both jobs succeeded
+        env:
+          RUST_TESTS: ${{ needs.rust-tests.result }}
+          LAB: ${{ needs.lab.result }}
+        run: |
+          printf 'rust-tests: %s\nlab: %s\n' "$RUST_TESTS" "$LAB"
+          [ "$RUST_TESTS" = success ] && [ "$LAB" = success ]
