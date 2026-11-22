@@ -80,6 +80,15 @@
 		reverse_proxy unix//var/run/app/media.sock
 	}
 
+	# NodeInfo 2.0 lives at the domain root, not under `/.well-known`: the discovery
+	# document the API serves at `/.well-known/nodeinfo` advertises this URL, and without
+	# this rule the shell's catch-all answers it with an HTML page instead of the JSON
+	# document. It must be matched before the `@api` handle below, though that handle's
+	# `/.well-known/*` already sends discovery to the API.
+	handle /nodeinfo/* {
+		reverse_proxy unix//var/run/app/api.sock
+	}
+
 	@api path /oauth/* /auth/* /users/* /inbox* /statuses/* /.well-known/* /api/*
 	handle @api {
 		reverse_proxy unix//var/run/app/api.sock {

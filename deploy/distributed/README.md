@@ -111,6 +111,27 @@ needs to know whether the API is behind a socket or a port.
 The shell (`nodus-web-server`) serves the first page and `/api/session`; the bundle it
 paints is served by the ingress from `/srv/nodus`.
 
+### NodeInfo 2.0 at the domain root
+
+NodeInfo has two URLs: the discovery document at `/.well-known/nodeinfo` and the document
+it advertises at `/nodeinfo/2.0`. Only the first lives under `/.well-known`; the second is a
+top-level path, so an ingress whose last rule is the shell answers it with an HTML page.
+The API serves both, and the ingress needs an explicit `/nodeinfo/*` rule to the API ahead
+of the shell fallback. The repo's `deploy/docker/Caddyfile` and `integration/Caddyfile`
+carry it.
+
+The production front door is **not versioned in this repository**: it is
+`/etc/caddy/nodus.caddy` on the ingress box (CT 100), edited in place. On 2026-11-22 it
+gained `handle /nodeinfo/*` to the API, with the previous file kept as
+`/etc/caddy/nodus.caddy.bak-nodeinfo-<stamp>`; `caddy validate` then `systemctl reload
+caddy` applied it. After any Caddy edit, check both URLs — the first must be the discovery
+JSON and the second the NodeInfo document, neither HTML:
+
+```console
+curl -fsS https://<domain>/.well-known/nodeinfo
+curl -fsS https://<domain>/nodeinfo/2.0
+```
+
 ## Checking a split deployment
 
 ```console
