@@ -25,6 +25,11 @@ ARG NODE_VERSION=22-bookworm-slim
 FROM rust:${RUST_VERSION} AS shell
 WORKDIR /src
 COPY . /src
+# Same mtime trap as Dockerfile.server: COPY stamps one mtime on every file and cargo's
+# freshness check compares mtimes, so a warm cache can hide a changed crate. Touching the
+# sources costs the incremental cache and buys a build that matches the context.
+RUN find /src -type f \( -name '*.rs' -o -name 'Cargo.toml' -o -name 'Cargo.lock' \) \
+      -exec touch {} +
 WORKDIR /src/web
 # Same reason as Dockerfile.server: the dated Cargo.lock is resolved in the
 # image layer rather than edited in the checkout.
@@ -69,6 +74,11 @@ RUN rustup target add wasm32-unknown-unknown
 
 WORKDIR /src
 COPY . /src
+# Same mtime trap as Dockerfile.server: COPY stamps one mtime on every file and cargo's
+# freshness check compares mtimes, so a warm cache can hide a changed crate. Touching the
+# sources costs the incremental cache and buys a build that matches the context.
+RUN find /src -type f \( -name '*.rs' -o -name 'Cargo.toml' -o -name 'Cargo.lock' \) \
+      -exec touch {} +
 WORKDIR /src/web
 RUN npm ci --no-audit --no-fund --include=optional
 # npm 9 drops the platform binary of @tailwindcss/oxide that the lockfile names as an

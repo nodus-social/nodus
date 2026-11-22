@@ -15,6 +15,14 @@ ARG RUST_VERSION=1-bookworm
 FROM rust:${RUST_VERSION} AS build
 WORKDIR /src
 COPY . /src
+# COPY stamps every file with the same mtime, and cargo's freshness check compares mtimes:
+# with a warm target cache, an unchanged mtime makes cargo believe a crate is up to date,
+# so a build can link an old `nodus-server-store` rlib against a new `nodus-server-api`
+# (E0425 at `crates/api/src/media.rs:812` is how that surfaced) or silently ship stale
+# code. Touching the sources makes every fingerprint older than the sources it describes:
+# an incremental build is traded for a build that matches the context.
+RUN find /src -type f \( -name '*.rs' -o -name 'Cargo.toml' -o -name 'Cargo.lock' \) \
+      -exec touch {} +
 WORKDIR /src/nodus-backend
 # The cargo registry and the target directory are cache mounts: the first build pays for
 # the dependency graph, later builds only recompile what changed. The binaries are copied
