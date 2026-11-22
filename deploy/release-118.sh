@@ -1,0 +1,469 @@
+#!/usr/bin/env bash
+# Deploys the six per-role backend binaries to LXC 118 and rolls them back as a set.
+#
+# Supersedes deploy-profiles.sh, which pushed one multi-role `nodus-server` for a
+# `nodus-backend.service` that no longer exists; its old binary would bind :3001 and fight
+# nodus-api. Every unit here gets its own binary, and each backup is verified before any
+# live file moves.
+set -Eeuo pipefail
+
+HOST=${HOST:-root@hyper.luxuride.eu}
+CT=${CT:-118}
+EXPECTED_FEATURES=62
+ROLES=(calc scan prune feed media api)
+BACKUPS_READY=0
+
+log() { printf '%s\n' "$*"; }
+
+usage() {
+    cat <<'USAGE'
+usage: release-118.sh <artifact-dir> <stamp>
+       release-118.sh --rollback <stamp>
+
+  artifact-dir  directory holding nodus-calc, nodus-scan, nodus-prune,
+                nodus-feed, nodus-media and nodus-api
+  stamp         suffix for the backups: /usr/local/bin/<name>.bak-<stamp>
+
+Environment: HOST (default root@hyper.luxuride.eu), CT (default 118)
+USAGE
+}
+
+# Runs a bash script on the host. CT, STAMP and an optional NAME are exported as shell
+# variables, so the body can stay a quoted heredoc and never be expanded locally.
+host_run() {
+    {
+        printf 'set -euo pipefail\n'
+        printf 'CT=%q\nSTAMP=%q\nNAME=%q\n' "$CT" "$STAMP" "${1:-}"
+        cat
+    } | ssh "$HOST" bash -s
+}
+
+cleanup_staging() {
+    host_run <<'REMOTE'
+for n in nodus-calc nodus-scan nodus-prune nodus-feed nodus-media nodus-api; do
+  rm -f "/root/$n.new"
+done
+pct exec "$CT" -- bash -c '
+  for n in nodus-calc nodus-scan nodus-prune nodus-feed nodus-media nodus-api; do
+    rm -f "/root/$n.new"
+  done
+'
+REMOTE
+}
+
+# Prints the highest GLIBC_2.x symbol version an ELF binary requires.
+artifact_glibc_ceiling() {
+    local bin=$1 ceiling
+    command -v objdump >/dev/null 2>&1 || {
+        log "FAIL: objdump is required to compute the GLIBC ceiling of $bin"
+        return 1
+    }
+    ceiling=$(objdump -T "$bin" 2>/dev/null | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sed 's/^GLIBC_//' | sort -Vu | tail -1 || true)
+    [ -n "$ceiling" ] || {
+        log "FAIL: $bin has no versioned glibc symbols to check"
+        return 1
+    }
+    printf '%s\n' "$ceiling"
+}
+
+target_glibc_version() {
+    host_run <<'REMOTE'
+pct exec "$CT" -- ldd --version | awk 'NR==1 { print $NF }'
+REMOTE
+}
+
+# Refuses the deploy before any systemctl stop when an artifact needs a newer glibc
+# than the container has. An earlier run installed glibc-2.38 binaries on 2.36 and had
+# to roll back; this check is that lesson, enforced here rather than in the operator's head.
+glibc_preflight() {
+    local target role ceiling
+    target=$(target_glibc_version)
+    if ! printf '%s' "$target" | grep -qE '^[0-9]+\.[0-9]+$'; then
+        log "FAIL: cannot read glibc version from CT $CT (got '${target:-nothing}')"
+        return 1
+    fi
+    log "   CT $CT glibc: $target"
+    for role in "${ROLES[@]}"; do
+        ceiling=$(artifact_glibc_ceiling "$ART/nodus-$role") || return 1
+        if [ "$(printf '%s\n%s\n' "$target" "$ceiling" | sort -V | tail -1)" != "$target" ]; then
+            log "FAIL: nodus-$role needs $ceiling, CT $CT has glibc $target"
+            return 1
+        fi
+        log "   nodus-$role needs <= $ceiling"
+    done
+}
+
+wait_active() {
+    local role=$1 i state
+    for i in $(seq 1 30); do
+        state=$(
+            host_run "$role" <<'REMOTE'
+pct exec "$CT" -- systemctl is-active "nodus-$NAME.service" 2>/dev/null || true
+REMOTE
+        )
+        [ "$state" = active ] && return 0
+        sleep 1
+    done
+    return 1
+}
+
+journal_clean() {
+    local role=$1 hits
+    hits=$(
+        host_run "$role" <<'REMOTE'
+pct exec "$CT" -- bash -c '
+  journalctl -u "nodus-$1.service" --since "-2min" --no-pager -o cat | grep -E "ERROR|panicked" || true
+' _ "$NAME"
+REMOTE
+    )
+    [ -z "$hits" ] || {
+        printf '%s\n' "$hits" >&2
+        return 1
+    }
+}
+
+check_role() {
+    local role=$1 unit="nodus-$role.service" i code='' port='' up='' sock=''
+    wait_active "$role" || {
+        log "FAIL: $unit did not become active"
+        return 1
+    }
+
+    case $role in
+    api)
+        for i in $(seq 1 90); do
+            code=$(
+                host_run "$role" <<'REMOTE'
+pct exec "$CT" -- curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3001/healthz || true
+REMOTE
+            )
+            [ "$code" = 200 ] && break
+            sleep 1
+        done
+        [ "$code" = 200 ] || {
+            log "FAIL: $unit /healthz returned ${code:-nothing}, want 200"
+            return 1
+        }
+        ;;
+    feed | media)
+        case $role in feed) port=3002 ;; media) port=3003 ;; esac
+        for i in $(seq 1 30); do
+            up=$(
+                host_run "$role" <<'REMOTE'
+pct exec "$CT" -- bash -c '
+  case $1 in feed) p=3002;; media) p=3003;; esac
+  ss -ltn | grep -q ":$p " && echo up || true
+' _ "$NAME"
+REMOTE
+            )
+            if [ "$up" = up ]; then break; fi
+            sleep 1
+        done
+        [ "$up" = up ] || {
+            log "FAIL: $unit is not listening on :$port"
+            return 1
+        }
+        code=$(
+            host_run "$role" <<'REMOTE'
+pct exec "$CT" -- bash -c '
+  case $1 in feed) p=3002;; media) p=3003;; esac
+  curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$p/healthz" || true
+' _ "$NAME"
+REMOTE
+        )
+        [ "$code" = 404 ] || {
+            log "FAIL: $unit /healthz returned ${code:-nothing}, want 404"
+            return 1
+        }
+        ;;
+    calc | scan | prune)
+        for i in $(seq 1 15); do
+            sock=$(
+                host_run "$role" <<'REMOTE'
+pct exec "$CT" -- test -S "/var/lib/nodus/run/$NAME.sock" && echo yes || true
+REMOTE
+            )
+            if [ "$sock" = yes ]; then break; fi
+            sleep 1
+        done
+        [ "$sock" = yes ] || {
+            log "FAIL: $unit did not create /var/lib/nodus/run/$role.sock"
+            return 1
+        }
+        ;;
+    esac
+
+    journal_clean "$role" || {
+        log "FAIL: $unit logged ERROR or panicked in the last 2 minutes"
+        return 1
+    }
+    log "   $unit active (${port:+:$port }${code:+healthz $code})"
+}
+
+push_artifact() {
+    local name=$1 src="$ART/$1" local_sha host_sha ct_sha
+    local_sha=$(sha256sum "$src" | cut -d' ' -f1)
+    scp -q "$src" "$HOST:/root/$name.new"
+    host_sha=$(
+        host_run "$name" <<'REMOTE'
+sha256sum "/root/$NAME.new" | cut -d' ' -f1
+REMOTE
+    )
+    [ "$host_sha" = "$local_sha" ] || {
+        log "FAIL: $name host staging sha $host_sha != local $local_sha"
+        return 1
+    }
+    host_run "$name" <<'REMOTE'
+pct push "$CT" "/root/$NAME.new" "/root/$NAME.new"
+REMOTE
+    ct_sha=$(
+        host_run "$name" <<'REMOTE'
+pct exec "$CT" -- sha256sum "/root/$NAME.new" | cut -d' ' -f1
+REMOTE
+    )
+    [ "$ct_sha" = "$local_sha" ] || {
+        log "FAIL: $name container staging sha $ct_sha != local $local_sha"
+        return 1
+    }
+    log "   $name staged sha256=$ct_sha"
+}
+
+backup_live() {
+    local name=$1 out
+    out=$(
+        host_run "$name" <<'REMOTE'
+pct exec "$CT" -- bash -c '
+  set -euo pipefail
+  live=/usr/local/bin/$1
+  bak=$live.bak-$2
+  cp -f "$live" "$bak"
+  live_sha=$(sha256sum "$live" | cut -d" " -f1)
+  bak_sha=$(sha256sum "$bak" | cut -d" " -f1)
+  [ "$live_sha" = "$bak_sha" ] || { echo "backup mismatch for $live: $live_sha != $bak_sha" >&2; exit 1; }
+  printf "%s sha256=%s\n" "$bak" "$bak_sha"
+' _ "$NAME" "$STAMP"
+REMOTE
+    )
+    log "   $out"
+}
+
+install_and_start() {
+    local role=$1 name="nodus-$1" local_sha installed_sha
+    local_sha=$(sha256sum "$ART/$name" | cut -d' ' -f1)
+    host_run "$role" <<'REMOTE'
+pct exec "$CT" -- bash -c '
+  set -euo pipefail
+  name=nodus-$1
+  unit=$name.service
+  systemctl stop "$unit"
+  install -o root -g root -m 755 "/root/$name.new" "/usr/local/bin/$name"
+  systemctl start "$unit"
+' _ "$NAME"
+REMOTE
+    installed_sha=$(
+        host_run "$role" <<'REMOTE'
+pct exec "$CT" -- sha256sum "/usr/local/bin/nodus-$NAME" | cut -d' ' -f1
+REMOTE
+    )
+    [ "$installed_sha" = "$local_sha" ] || {
+        log "FAIL: installed $name sha $installed_sha != local $local_sha"
+        return 1
+    }
+    INSTALLED_SHA[$role]=$installed_sha
+    log "   $name installed sha256=$installed_sha"
+}
+
+migration_report() {
+    local lines
+    lines=$(
+        host_run api <<'REMOTE'
+pct exec "$CT" -- bash -c 'journalctl -u nodus-api --since "-5min" --no-pager -o cat | grep -i migrat || true'
+REMOTE
+    )
+    log "-- nodus-api migration output --"
+    if [ -n "$lines" ]; then
+        printf '%s\n' "$lines" | sed 's/^/   /'
+    else
+        log "   (no migration lines logged)"
+    fi
+    if printf '%s' "$lines" | grep -Eqi 'error|fail'; then
+        log "FAIL: a migration reported an error"
+        return 1
+    fi
+}
+
+feature_count() {
+    local body count
+    body=$(
+        host_run <<'REMOTE'
+pct exec "$CT" -- curl -fsS http://127.0.0.1:3001/api/v1/meta
+REMOTE
+    )
+    if command -v jq >/dev/null 2>&1; then
+        count=$(printf '%s' "$body" | jq '.features|length')
+    else
+        count=$(printf '%s' "$body" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["features"]))')
+    fi
+    printf '%s\n' "$count"
+}
+
+do_rollback() {
+    local stamp=$1 role code=
+    log "=== rolling back every binary to .bak-$stamp ==="
+    for role in "${ROLES[@]}"; do
+        host_run "$role" <<'REMOTE'
+pct exec "$CT" -- bash -c '
+  set -euo pipefail
+  name=nodus-$1
+  bak=/usr/local/bin/$name.bak-$2
+  live=/usr/local/bin/$name
+  unit=$name.service
+  [ -f "$bak" ] || { echo "missing backup $bak" >&2; exit 1; }
+  systemctl stop "$unit"
+  install -o root -g root -m 755 "$bak" "$live"
+  systemctl start "$unit"
+  bak_sha=$(sha256sum "$bak" | cut -d" " -f1)
+  live_sha=$(sha256sum "$live" | cut -d" " -f1)
+  [ "$bak_sha" = "$live_sha" ] || { echo "rollback mismatch for $name: $bak_sha != $live_sha" >&2; exit 1; }
+  echo "restored $name sha256=$live_sha"
+' _ "$NAME" "$STAMP"
+REMOTE
+        wait_active "$role" || {
+            log "ROLLBACK FAILED: nodus-$role.service is not active"
+            return 1
+        }
+    done
+    for _ in $(seq 1 90); do
+        code=$(
+            host_run api <<'REMOTE'
+pct exec "$CT" -- curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3001/healthz || true
+REMOTE
+        )
+        [ "$code" = 200 ] && break
+        sleep 1
+    done
+    [ "$code" = 200 ] || {
+        log "ROLLBACK FAILED: nodus-api /healthz is ${code:-nothing}"
+        return 1
+    }
+    log "rollback complete: all six units restarted, nodus-api /healthz=200"
+}
+
+deploy_failed() {
+    local code=${1:-1}
+    trap - ERR
+    set +e
+    printf '\n*** DEPLOY FAILED (status %s) ***\n' "$code" >&2
+    if [ "$BACKUPS_READY" != 1 ]; then
+        printf 'No live binary has moved yet; production is untouched, nothing to roll back.\n' >&2
+        cleanup_staging
+        exit "$code"
+    fi
+    (
+        set -e
+        do_rollback "$STAMP"
+    )
+    if [ $? -eq 0 ]; then
+        printf 'ROLLBACK COMPLETE: the previous binaries are live again.\n' >&2
+        cleanup_staging
+        exit "$code"
+    fi
+    printf 'ROLLBACK FAILED: production state is inconsistent, inspect now.\n' >&2
+    cleanup_staging
+    exit 2
+}
+
+print_summary() {
+    local role
+    log ""
+    log "=== installed sha256 ==="
+    for role in "${ROLES[@]}"; do
+        printf '   %-11s %s\n' "nodus-$role" "${INSTALLED_SHA[$role]}"
+    done
+    log "=== systemctl is-active ==="
+    for role in "${ROLES[@]}"; do
+        printf '   nodus-%s.service %s\n' "$role" \
+            "$(
+                host_run "$role" <<'REMOTE'
+pct exec "$CT" -- systemctl is-active "nodus-$NAME.service" 2>/dev/null || true
+REMOTE
+            )"
+    done
+    log "=== listeners (3001/3002/3003) ==="
+    host_run <<'REMOTE'
+pct exec "$CT" -- ss -ltn | grep -E ':300[123] ' || true
+REMOTE
+}
+
+main() {
+    local mode=deploy role count
+
+    if [ $# -eq 2 ] && [ "$1" = "--rollback" ]; then
+        mode=rollback
+        STAMP=$2
+    elif [ $# -eq 2 ]; then
+        ART=$1
+        STAMP=$2
+    else
+        usage >&2
+        exit 2
+    fi
+
+    case $STAMP in
+    '' | *[!A-Za-z0-9._-]*)
+        log "stamp may contain only letters, digits, dot, underscore and dash"
+        exit 2
+        ;;
+    esac
+
+    if [ "$mode" = rollback ]; then
+        do_rollback "$STAMP"
+        cleanup_staging
+        log "rollback exit: feature count is now $(feature_count) (the previous build's)"
+        exit 0
+    fi
+
+    [ -d "$ART" ] || {
+        log "artifact directory not found: $ART"
+        exit 2
+    }
+    for role in "${ROLES[@]}"; do
+        [ -f "$ART/nodus-$role" ] || {
+            log "missing artifact $ART/nodus-$role; refusing a partial set"
+            exit 2
+        }
+    done
+
+    log "deploying $ART -> $HOST CT $CT (stamp $STAMP)"
+    log "-- phase 0: glibc preflight (before any service is touched) --"
+    glibc_preflight
+
+    declare -gA INSTALLED_SHA=()
+    trap 'deploy_failed $?' ERR
+
+    log "-- phase 1: stage and verify every binary --"
+    for role in "${ROLES[@]}"; do push_artifact "nodus-$role"; done
+    log "-- phase 2: back up every live binary and verify the backup --"
+    for role in "${ROLES[@]}"; do backup_live "nodus-$role"; done
+    BACKUPS_READY=1
+    log "-- phase 3: install and restart in order: ${ROLES[*]} --"
+    for role in "${ROLES[@]}"; do
+        install_and_start "$role"
+        check_role "$role"
+    done
+
+    migration_report
+    count=$(feature_count)
+    log "features: $count (want $EXPECTED_FEATURES)"
+    [ "$count" = "$EXPECTED_FEATURES" ] || {
+        log "FAIL: /api/v1/meta advertises $count features"
+        return 1
+    }
+
+    cleanup_staging
+    trap - ERR
+    print_summary
+    log "DEPLOY OK"
+}
+
+main "$@"
