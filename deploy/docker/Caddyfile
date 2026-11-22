@@ -39,6 +39,15 @@
 
 	# The recommendation surface is its own process with its own socket: a slow model must
 	# not queue behind a request, and a restart of either must not restart the other.
+	#
+	# The order of these `handle` blocks is load-bearing: they are exclusive and matched top
+	# to bottom, so every path listed in `@feed` is answered by the feed even though the
+	# `/api/*` rule further down also matches it. `/api/v1/meta` must therefore stay out of
+	# this matcher. The feed does serve the path, but with its own three names; the API
+	# answers it with the instance's whole handshake, and a client reads that handshake to
+	# decide which console it can draw. Omitting the path lets the later `/api/*` rule route
+	# it to the API — listing it, as this file once did, reduces every client to three
+	# capabilities and hides the rest of the UI.
 	@feed path /api/v1/feed/* /api/v1/browse /api/v1/events /api/v1/feedback/* /api/v1/me /api/v1/sync/*
 	handle @feed {
 		reverse_proxy unix//var/run/app/feed.sock

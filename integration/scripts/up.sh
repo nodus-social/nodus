@@ -45,6 +45,10 @@ wait_for_url "http://localhost:${port}/healthz" 120
 wait_for_url "http://localhost:${port}/api/v1/healthz" 120
 wait_for_url "http://localhost:${port}/api/v1/instance" 120
 
+# The shell reads its capability list from this same-origin path, and the route table has
+# two processes that answer it. Assert the API's answer won; see common.sh for why.
+assert_meta_contract "http://localhost:${port}/api/v1/meta"
+
 printf 'waiting for Postgres ...\n'
 compose exec -T postgres pg_isready -U nodus -d nodus >/dev/null
 

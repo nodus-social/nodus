@@ -102,3 +102,37 @@ assert_own_project() {
         esac
     done
 }
+
+# The feed answers `/api/v1/meta` with exactly its own three names
+# (recommender/crates/feeds/src/routes/meta.rs). Any answer at or below that count came from
+# the feed, not from the API.
+FEED_HANDSHAKE_FEATURES=3
+
+# Asserts that the same-origin handshake is the API's, not the feed's.
+#
+# One path, two processes: the API answers it with every capability the instance serves,
+# the feed with the three it serves itself. The route table is the only place one is chosen
+# over the other, and nothing downstream can tell the difference except by counting. A
+# feed answer here is not cosmetic: the shell, the SSR host and the e2e suites all gate
+# their UI on this list, so three names means a server that appears to do nothing.
+assert_meta_contract() {
+    url=$1
+    if ! body=$(curl -fsS "$url"); then
+        printf 'FAIL: %s did not answer, so the handshake cannot be checked\n' "$url" >&2
+        return 1
+    fi
+    if ! count=$(printf '%s' "$body" | jq -e '.features | length' 2>/dev/null); then
+        printf 'FAIL: %s did not return a features array\n' "$url" >&2
+        return 1
+    fi
+    if [ "$count" -le "$FEED_HANDSHAKE_FEATURES" ]; then
+        printf 'FAIL: %s advertises only %s features: %s\n' \
+            "$url" "$count" "$(printf '%s' "$body" | jq -c '.features' 2>/dev/null)" >&2
+        printf '      That is the feed process answering, not the API. Clients gate their\n' >&2
+        printf '      whole UI on this list, so they draw three surfaces and hide the rest.\n' >&2
+        printf '      The Caddyfile route table let the feed claim /api/v1/meta: the @feed\n' >&2
+        printf '      matcher must not list it, so the /api/* rule answers it instead.\n' >&2
+        return 1
+    fi
+    printf '  handshake        %s features at %s\n' "$count" "$url"
+}

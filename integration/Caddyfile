@@ -45,6 +45,13 @@
 
 	# The recommendation surface is its own process: a slow model must not queue behind a
 	# request, and a restart of either must not restart the other.
+	#
+	# `/api/v1/meta` is deliberately absent. The feed serves that path too, but with its own
+	# three names (`recommender/crates/feeds/src/routes/meta.rs`), while the API answers the
+	# instance's whole handshake. A client reads that handshake to decide what it can draw,
+	# so the API's answer has to win: left out of this matcher, the `/api/*` rule further
+	# down answers it. Listing it here is what made every same-origin client — shell, SSR
+	# host, e2e suites — believe this instance supports three things.
 	@feed path /api/v1/feed/* /api/v1/browse /api/v1/events /api/v1/feedback/* /api/v1/me /api/v1/sync/*
 	handle @feed {
 		reverse_proxy nodus-feed:3000
