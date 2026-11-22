@@ -27,6 +27,21 @@ test('drive with an uploaded file', async ({ page }) => {
   await expect(page.locator('main')).toContainText('4.1 KB used · 1 files');
 
   await prepareVisualPage(page, page.locator('main'));
+  // The reading column is a flex item in the page's row and has no height of
+  // its own, so it is stretched to the rail's height: the same drive measured
+  // 557px while the rail drew an empty staff card and 517px after web 17f66d6
+  // stopped drawing it, with the drive's own pixels identical and the whole
+  // difference trailing background. Pin the crop to the column's own content,
+  // as capabilities-visual.spec.mjs does for the rail itself.
+  await page.locator('main').evaluate((element) => {
+    const parent = getComputedStyle(element.parentElement);
+    if (parent.flexDirection.startsWith('row')) {
+      element.style.alignSelf = 'flex-start';
+    }
+    element.style.height = 'auto';
+    const { height } = element.getBoundingClientRect();
+    element.style.height = `${Math.ceil(height)}px`;
+  });
   await expect(page.locator('main')).toHaveScreenshot('drive.png', {
     mask: volatileMasks(page),
   });

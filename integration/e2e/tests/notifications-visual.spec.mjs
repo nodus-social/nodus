@@ -43,6 +43,20 @@ test('notifications with one favourite', async ({ page, browser }) => {
 
     const main = page.locator('main');
     await prepareVisualPage(page, main);
+    // Same stretch as the drive shot: the column has no height of its own, so
+    // its box was the rail's height (557px) rather than the inbox's own 218px,
+    // and web 17f66d6 removing the rail's empty staff card shortened the crop
+    // by 40px without touching a pixel of the inbox. Screenshot the column at
+    // its own content height instead.
+    await main.evaluate((element) => {
+      const parent = getComputedStyle(element.parentElement);
+      if (parent.flexDirection.startsWith('row')) {
+        element.style.alignSelf = 'flex-start';
+      }
+      element.style.height = 'auto';
+      const { height } = element.getBoundingClientRect();
+      element.style.height = `${Math.ceil(height)}px`;
+    });
     await expect(main).toHaveScreenshot('notifications.png', {
       mask: volatileMasks(page),
     });
