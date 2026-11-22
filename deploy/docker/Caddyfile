@@ -39,7 +39,7 @@
 
 	# The recommendation surface is its own process with its own socket: a slow model must
 	# not queue behind a request, and a restart of either must not restart the other.
-	@feed path /api/v1/meta /api/v1/feed/* /api/v1/browse /api/v1/events /api/v1/feedback/* /api/v1/me /api/v1/sync/*
+	@feed path /api/v1/feed/* /api/v1/browse /api/v1/events /api/v1/feedback/* /api/v1/me /api/v1/sync/*
 	handle @feed {
 		reverse_proxy unix//var/run/app/feed.sock
 	}
