@@ -133,6 +133,45 @@ REMOTE
     log "   CT $CT renderer: ffmpeg, ffprobe, $encoders libvpx encoder(s)"
 }
 
+# Restarts the second process of a role, when the container runs one.
+#
+# The second API and media instances execute the SAME paths as the first, so replacing a
+# binary and restarting only the first unit leaves the twin running the previous inode:
+# the deploy looks complete while half the processes still answer with old code. The
+# role list deliberately stays the artifact list, because a twin has no artifact of its
+# own.
+restart_twins() {
+    local twin code='' i
+    for twin in nodus-api2 nodus-media2; do
+        # host_run forwards its argument as NAME for the quoted heredoc below.
+        host_run "$twin" <<'REMOTE'
+pct exec "$CT" -- systemctl cat "$NAME.service" >/dev/null 2>&1 || exit 0
+pct exec "$CT" -- systemctl restart "$NAME.service"
+REMOTE
+        if [ "$twin" = nodus-api2 ]; then
+            for i in $(seq 1 90); do
+                code=$(host_run "$twin" <<'REMOTE'
+pct exec "$CT" -- curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:3004/healthz" || true
+REMOTE
+                )
+                [ "$code" = 200 ] && break
+                sleep 1
+            done
+            [ "$code" = 200 ] || {
+                log "FAIL: nodus-api2 answered $code on :3004 after restart"
+                return 1
+            }
+            log "   nodus-api2 restarted, :3004 healthz 200"
+        else
+            sleep 2
+            host_run "$twin" <<'REMOTE'
+pct exec "$CT" -- systemctl is-active "$NAME.service" | grep -qx active
+REMOTE
+            log "   nodus-media2 restarted"
+        fi
+    done
+}
+
 wait_active() {
     local role=$1 i state
     for i in $(seq 1 30); do
@@ -507,6 +546,8 @@ main() {
         install_and_start "$role"
         check_role "$role"
     done
+    log "-- phase 4: restart the second instances that share these binaries --"
+    restart_twins
 
     migration_report
     count=$(feature_count)
