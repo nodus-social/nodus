@@ -44,10 +44,12 @@ env:
   # 18443, or this checkout's 18080): the local harness runs the stack under
   # dind with `--network host`, so it publishes into the same namespace a
   # `integration/scripts/up.sh` lab is using. A distinct pair lets both exist.
-  # Every consumer derives from these two values; see `point the lab at the CI
-  # port` below.
-  LAB_HTTP_PORT: '18090'
-  LAB_HTTPS_PORT: '18453'
+  # These must stay distinct from integration/.env.example (8080/18443) and
+  # from whatever a developer's integration/.env sets, because a local act run
+  # shares the host network with a developer lab. Every consumer derives from
+  # these two values; see `build the images and start the stack` below.
+  LAB_HTTP_PORT: '18190'
+  LAB_HTTPS_PORT: '18553'
 
 jobs:
   preflight:
@@ -248,36 +250,26 @@ jobs:
           (cd integration/e2e && npm ci --no-audit --no-fund)
           (cd web/e2e && npx playwright install --with-deps chromium)
 
-      - name: point the lab at the CI port
-        # Compose publishes Caddy on the host from these two values, e2e.sh
-        # reads them back from integration/.env for LAB_BASE_URL and for the
-        # `nodus.test:443` resolver rule, and playwright.config.mjs takes the
-        # https one from LAB_HTTPS_PORT. Writing both here is what keeps the
-        # browser, the Node-side requests and the published ports in step.
-        #
-        # Only rewrite the ports, never recreate the file. `up.sh`'s ensure_env
-        # generates the database/valkey/share secrets when they are still
-        # markers, and dind keeps `nodus-lab_postgres-data` between local runs,
-        # so regenerating them every run would send a new password at a volume
-        # that kept the old one: every service then dies with `password
-        # authentication failed for user "nodus"` and the stack never gets
-        # healthy. A dispatched run starts from a clean checkout, so the file is
-        # created from the example there.
-        run: |
-          if [ ! -f integration/.env ]; then
-            cp integration/.env.example integration/.env
-          fi
-          sed -i "s/^NODUS_HTTP_PORT=.*/NODUS_HTTP_PORT=${LAB_HTTP_PORT}/" \
-            integration/.env
-          sed -i "s/^NODUS_HTTPS_PORT=.*/NODUS_HTTPS_PORT=${LAB_HTTPS_PORT}/" \
-            integration/.env
-
       - name: build the images and start the stack
         # build.sh builds the images from the recorded gitlinks, then compose
         # starts them and waits for health. Migrations run in nodus-api's boot.
+        #
+        # The job's ports arrive through the SHELL environment, because docker
+        # compose gives it precedence over `--env-file integration/.env` (the
+        # scripts' compose invocation) and common.sh's http_port() reads the
+        # same precedence. The developer's integration/.env is never edited.
+        # `up.sh`'s ensure_env still creates the file from .env.example on a
+        # clean checkout and generates the secrets once; dind keeps
+        # `nodus-lab_postgres-data` between local runs, so regenerating them
+        # would break authentication against the surviving volume.
+        env:
+          NODUS_HTTP_PORT: ${{ env.LAB_HTTP_PORT }}
+          NODUS_HTTPS_PORT: ${{ env.LAB_HTTPS_PORT }}
         run: integration/scripts/up.sh
 
       - name: seed ada and grace
+        env:
+          NODUS_HTTP_PORT: ${{ env.LAB_HTTP_PORT }}
         run: integration/scripts/seed.sh
 
       - name: integration e2e (Caddy origin, inside the pinned browser image)
@@ -287,6 +279,7 @@ jobs:
         # assumed here; the script does not exist yet. It needs the docker
         # daemon the job already uses for the stack (not docker-in-docker).
         env:
+          NODUS_HTTP_PORT: ${{ env.LAB_HTTP_PORT }}
           LAB_BASE_URL: http://127.0.0.1:${{ env.LAB_HTTP_PORT }}
           LAB_HTTPS_PORT: ${{ env.LAB_HTTPS_PORT }}
         run: integration/scripts/e2e.sh --retries=0

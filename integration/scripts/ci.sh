@@ -226,6 +226,24 @@ port_holders() {
     ss -ltnH "sport = :$1" 2>/dev/null | awk '{print $4}' | paste -sd' ' -
 }
 
+# A developer lab that has not been started yet still counts: its ports come
+# from integration/.env, so a file naming the CI pair means the next up.sh will
+# fight this run for them.
+warn_env_port_collision() {
+    local file="$REPO_DIR/integration/.env"
+    local pair name want port
+    [ -f "$file" ] || return 0
+    for pair in "NODUS_HTTP_PORT=$LAB_HTTP_PORT" "NODUS_HTTPS_PORT=$LAB_HTTPS_PORT"; do
+        name=${pair%%=*}
+        want=${pair#*=}
+        [ -n "$want" ] || continue
+        port=$(sed -n "s/^${name}=//p" "$file" | tail -n 1)
+        [ "$port" = "$want" ] || continue
+        printf 'ci.sh: warning: integration/.env sets %s=%s, the port this lab job publishes; a developer lab started from that file will collide with this run. Restore the documented defaults (integration/README.md).\n' \
+            "$name" "$port" >&2
+    done
+}
+
 require_free_lab_ports() {
     local port holders
     command -v ss >/dev/null || {
@@ -315,6 +333,7 @@ run_act() {
     fi
     if [ "$host_network" -eq 1 ]; then
         args+=(--network host)
+        warn_env_port_collision
         require_free_lab_ports
     fi
     args+=("${jobs[@]}" "${passthrough[@]}")

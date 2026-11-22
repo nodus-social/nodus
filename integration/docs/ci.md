@@ -65,8 +65,8 @@ integration/scripts/ci.sh down                 # stop Docker-in-Docker
   `ci.sh up` replaces a running dind that lacks the mount, so an old container
   does not keep failing;
 - `--network host` for the `lab` job (and a whole-workflow run), because its
-  published ports (the workflow's `LAB_HTTP_PORT` and `LAB_HTTPS_PORT`, 18090
-  and 18453) and the nested e2e container need the host network. Jobs that only
+  published ports (the workflow's `LAB_HTTP_PORT` and `LAB_HTTPS_PORT`, 18190
+  and 18553) and the nested e2e container need the host network. Jobs that only
   need a service container (`rust-tests` and its `postgres` service) run on
   act's bridge network, where the service hostname resolves.
 
@@ -76,7 +76,9 @@ integration/scripts/ci.sh down                 # stop Docker-in-Docker
   `failed to bind host port 0.0.0.0:18443/tcp: address already in use`. With a
   pair of its own, a local stack can stay up during a CI run. `ci.sh` reads the
   pair out of the workflow and checks both with `ss` before starting act, so a
-  collision is named up front instead of surfacing from inside dind.
+  collision is named up front instead of surfacing from inside dind; it also
+  warns when `integration/.env` names the same pair, since the next developer
+  lab would then collide.
 
 Act is installed into `~/.local/bin` on first use (`ACT_VERSION`, default
 0.2.98). Logs land in `integration/.act/` (git-ignored).
@@ -113,7 +115,7 @@ through `DOCKER_HOST` live in the dind volume.
 | docker daemon | act, dind and the lab's images |
 | ~10 GB free disk | `catthehacker/ubuntu:act-24.04`, `rust:1-bookworm`, `pgvector/pgvector:pg17`, the lab images, dind's layer cache |
 | network (first run) | act binary, runner image, node toolchain, Playwright/Chromium, crates |
-| `LAB_HTTP_PORT`, `LAB_HTTPS_PORT` | not environment knobs: the workflow's own `env:` (18090/18453), so the CI lab does not collide with a developer stack. Every consumer derives from them — the `point the lab at the CI port` step writes `NODUS_HTTP_PORT`/`NODUS_HTTPS_PORT` into `integration/.env`, `integration/scripts/e2e.sh` reads that file back, and `LAB_BASE_URL` is built from `LAB_HTTP_PORT`. Change them in `ci.yml`. The step rewrites those two lines only: a local run keeps the `.env` its dind volumes were initialised from, because `up.sh`'s `ensure_env` generates the passwords on first use and the postgres volume outlives a run |
+| `LAB_HTTP_PORT`, `LAB_HTTPS_PORT` | not environment knobs: the workflow's own `env:` (18190/18553), so the CI lab does not collide with a developer stack. The job exports `NODUS_HTTP_PORT`/`NODUS_HTTPS_PORT` from them in the steps' `env:` rather than editing `integration/.env`: docker compose gives the shell environment precedence over `--env-file`, and `integration/scripts/common.sh`'s `http_port()` follows the same rule. `integration/scripts/e2e.sh` receives `LAB_BASE_URL`/`LAB_HTTPS_PORT` from the workflow. Change the pair in `ci.yml`; the developer's `.env` is left alone, so a local lab keeps its own ports and its dind volumes' passwords stay in step |
 
 ## Stages, what they need, rough duration
 

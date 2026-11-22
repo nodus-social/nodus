@@ -62,7 +62,16 @@ env_value() {
     sed -n "s|^$1=||p" "$INTEGRATION_DIR/.env" | tail -n 1
 }
 
+# The shell environment wins over integration/.env because compose gives it
+# precedence over `--env-file` (verified against Docker Compose v5.8.0 with
+# `NODUS_HTTP_PORT=19991 docker compose --env-file integration/.env config`,
+# which printed 19991). Keeping the same rule here is what lets CI export
+# NODUS_HTTP_PORT instead of rewriting the developer's file.
 http_port() {
+    if [ -n "${NODUS_HTTP_PORT:-}" ]; then
+        printf '%s\n' "$NODUS_HTTP_PORT"
+        return 0
+    fi
     port=$(env_value NODUS_HTTP_PORT)
     printf '%s\n' "${port:-8080}"
 }
