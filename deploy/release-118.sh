@@ -171,10 +171,24 @@ pct exec "$CT" -- bash -c '
 ' _ "$NAME"
 REMOTE
         )
-        [ "$code" = 404 ] || {
-            log "FAIL: $unit /healthz returned ${code:-nothing}, want 404"
+        # media answers 401 once NODUS_MEDIA_CLUSTER_TOKEN is configured: the probe is
+        # gated by the cluster token, so any HTTP answer proves the listener is serving
+        # and the token is enforced. feed has no token and keeps answering 404.
+        case $role in
+        media) want='404 or 401' ;;
+        *) want=404 ;;
+        esac
+        case "$code" in
+        404) ;;
+        401) [ "$role" = media ] || {
+            log "FAIL: $unit /healthz returned 401, want 404"
             return 1
-        }
+        } ;;
+        *)
+            log "FAIL: $unit /healthz returned ${code:-nothing}, want $want"
+            return 1
+            ;;
+        esac
         ;;
     calc | scan | prune)
         for i in $(seq 1 15); do
