@@ -83,6 +83,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,id=nodus-cargo-registry 
 
 FROM debian:bookworm-slim AS runtime
 ENV DEBIAN_FRONTEND=noninteractive
+# Same stamp as Dockerfile.server: the submodule commits this image was built from,
+# written by scripts/up.sh and read back by scripts/check-pins.sh.
+ARG NODUS_PINS=unknown
+LABEL nodus.pins=$NODUS_PINS
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       caddy curl ca-certificates tini \

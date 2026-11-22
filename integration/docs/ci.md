@@ -194,3 +194,16 @@ pulls and a full cargo compile.
   currently reads none.
 
 [nektos/act]: https://github.com/nektos/act
+
+## Is the running lab the current code?
+
+A green e2e run says the stack under test works, not that it is this checkout: an image
+built hours earlier answers every request in a well-formed way while holding a binary
+nobody is editing, and the `nodus.pins` label is the only evidence of what an image
+contains. `up.sh` stamps that label with the submodule commits it built from (or
+`worktree` under `LAB_BUILD_FROM_WORKTREE=1`) and prints it beside the handshake line, and
+it fails the handshake when the API's feature list is not the one
+`nodus-backend/crates/api/src/meta.rs` publishes. `integration/scripts/check-pins.sh`
+answers the same question without starting or building anything: it compares every lab
+image's label against `git ls-tree HEAD` and exits `1` naming the submodule that is behind
+(`2` when an image carries no pin at all, so "current" cannot be shown).

@@ -35,6 +35,12 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,id=nodus-cargo-registry 
 
 FROM debian:bookworm-slim AS runtime
 ENV DEBIAN_FRONTEND=noninteractive
+# The submodule commits this runtime was built from, stamped by scripts/up.sh as
+# `nodus-backend@<sha>,recommender@<sha>,...` (or `worktree` for an unpinned build). The
+# label is the only evidence a running stack carries about the code inside it, so
+# check-pins.sh answers "is this the current code?" without rebuilding.
+ARG NODUS_PINS=unknown
+LABEL nodus.pins=$NODUS_PINS
 # ffmpeg/ffprobe are how the API renders image and video variants in-process; the media
 # service itself only serves the bytes the shared volume holds.
 RUN apt-get update \
