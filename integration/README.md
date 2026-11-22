@@ -155,8 +155,10 @@ One origin, one route table (`integration/Caddyfile`), copied from
 `nodus-backend/deploy/docker/Caddyfile`:
 
 - the web shell owns `/api/session*`, `/oauth/callback*`, `/public-api/*`;
-- `nodus-feed` owns `/api/v1/meta`, `/api/v1/feed/*`, `/api/v1/browse`,
-  `/api/v1/events`, `/api/v1/feedback/*`, `/api/v1/me`, `/api/v1/sync/*`, `/s/*`;
+- `nodus-feed` owns `/api/v1/feed/*`, `/api/v1/browse`, `/api/v1/events`,
+  `/api/v1/feedback/*`, `/api/v1/me`, `/api/v1/sync/*`, `/s/*`. It also answers
+  `/api/v1/meta`, but that path is deliberately **not** in its matcher: the API's
+  handshake must win. See `nodus-backend/docs/16-capabilities.md`;
 - the API owns `/healthz`, `/readyz`, the icons, `/media/*` and everything else
   under `/api`, plus `/oauth`, `/auth`, `/users`, `/inbox`, `/statuses`,
   `/media` and `/.well-known`;
