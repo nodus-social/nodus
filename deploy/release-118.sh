@@ -93,6 +93,46 @@ glibc_preflight() {
     done
 }
 
+# Refuses the deploy when the container cannot render what it will be asked to render.
+#
+# ffmpeg and ffprobe are how the API derives every image and video variant in-process
+# (docs/09-deployment.md). CT 118 ran for a fortnight without them and every upload
+# failed with `media processing failed: No such file or directory (os error 2)` while
+# the service itself stayed healthy, so nothing else in this script noticed. The
+# encoder list is checked too: a build whose default codec is VP8 is useless on an
+# ffmpeg that has no libvpx.
+runtime_prerequisites() {
+    local found encoders
+    found=$(
+        host_run <<'REMOTE'
+pct exec "$CT" -- bash -c '
+  for tool in ffmpeg ffprobe; do
+    command -v "$tool" >/dev/null 2>&1 || { echo "missing $tool"; }
+  done
+'
+REMOTE
+    )
+    if [ -n "$found" ]; then
+        log "FAIL: CT $CT is missing: $(printf '%s' "$found" | tr '\n' ' ')"
+        log "      install it before deploying: pct exec $CT -- apt-get install -y --no-install-recommends ffmpeg"
+        return 1
+    fi
+    encoders=$(
+        host_run <<'REMOTE'
+pct exec "$CT" -- bash -c '
+  ffmpeg -hide_banner -encoders 2>/dev/null | grep -cE "libvpx-vp9|libvpx " || true
+'
+REMOTE
+    )
+    case $encoders in
+    '' | 0)
+        log "FAIL: CT $CT has no libvpx encoder, so a VP8/VP9 rendition cannot be produced"
+        return 1
+        ;;
+    esac
+    log "   CT $CT renderer: ffmpeg, ffprobe, $encoders libvpx encoder(s)"
+}
+
 wait_active() {
     local role=$1 i state
     for i in $(seq 1 30); do
@@ -123,7 +163,8 @@ REMOTE
 }
 
 check_role() {
-    local role=$1 unit="nodus-$role.service" i code='' port='' up='' sock=''
+    local role=$1
+    local unit="nodus-$role.service" code='' port='' up='' sock=''
     wait_active "$role" || {
         log "FAIL: $unit did not become active"
         return 1
@@ -449,8 +490,9 @@ main() {
     done
 
     log "deploying $ART -> $HOST CT $CT (stamp $STAMP)"
-    log "-- phase 0: glibc preflight (before any service is touched) --"
+    log "-- phase 0: preflight, before any service is touched --"
     glibc_preflight
+    runtime_prerequisites
 
     declare -gA INSTALLED_SHA=()
     trap 'deploy_failed $?' ERR
