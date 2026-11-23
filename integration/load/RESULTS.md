@@ -166,6 +166,96 @@ DB work per request — the authenticated read mix, whose home-timeline and
 notification requests hydrate 20-40 rows each and hold a connection for far
 longer.
 
+## Before / after: the authenticated read path, and the pool lever
+
+Measured 2026-11-23, after the baseline above, on the same stack, dataset and
+ramp. The change is described under the tables.
+
+**Statements per request**, `GET /api/v1/accounts/{id}/statuses?limit=20` for
+the seeded 20-status profile, captured with `log_statement=all` on `nodusload`
+(one request each, `out/queries_{before,after}_account_statuses.log`):
+
+| statement | before | after |
+|---|---|---|
+| account row | 21 | 2 |
+| `remote_moderation` visibility check | 21 | 1 |
+| `account.deleted_at` visibility check | 20 | 1 |
+| picture shapes (`profile_pictures`) | 20 | 1 |
+| media by status | 20 | 1 |
+| decorations (poll, tag, emoji, mention) | 80 | 1 |
+| viewer flags (favourite, reblog, mute) | 20 | 1 |
+| status page + page account | 2 | 2 |
+| oauth `last_used_at` write | 1 | 1 |
+| BEGIN / COMMIT | 40 | 2 |
+| **total** | **245** | **15** |
+
+The three most frequent before were the account row (21), then the two
+visibility checks (20 each). After, no statement appears more than twice.
+
+**Authenticated read mix, warm home cache.** Cells are p50/p95/p99 in ms,
+`before → after`:
+
+| endpoint | 10 VUs | 50 VUs | 100 VUs | 200 VUs |
+|---|---|---|---|---|
+| `home_timeline` | 33/119/218 → 19/85/167 | 123/365/563 → 254/546/813 | 185/375/550 → 594/1143/4094 | 337/598/757 → 1385/2124/3360 |
+| `notifications` | 36/128/227 → 20/103/178 | 128/356/588 → 296/579/839 | 210/404/524 → 722/1353/4479 | 395/693/880 → 1653/2681/3741 |
+| `profile` | 1/1/1 → 1/1/1 | 13/43/67 → 67/141/213 | 39/82/91 → 211/403/1601 | 100/186/239 → 488/768/1203 |
+| `profile_statuses` | 48/133/222 → 20/90/229 | 1561/3339/3518 → 392/777/970 | 5086/6779/6964 → 949/1855/4799 | 11436/14144/14284 → 2164/3977/4675 |
+| **req/s in that step** | 101 → 162 | 99 → 105 | 117 → 103 | 116 → 109 |
+
+**Pool lever, same scenario and same build:** `NODUS_LOAD_CONNECTIONS=25`
+(`integration/scripts/load.sh up`, which passes the value to
+`NODUS_DATABASE_CONNECTIONS`), one run of `k6 authenticated.js MODE=warm` via
+the same `docker run` invocation `load.sh` uses. At 200 VUs:
+
+| endpoint at 200 VUs | 10 connections | 25 connections |
+|---|---|---|
+| `home_timeline` p50/p99 | 1385 / 3360 | 1265 / 2284 |
+| `notifications` p50/p99 | 1653 / 3741 | 1468 / 2655 |
+| `profile` p50/p99 | 488 / 1203 | 411 / 732 |
+| `profile_statuses` p50/p99 | 2164 / 4675 | 1938 / 3075 |
+| **req/s at 50 / 100 / 200 VUs** | 105 / 103 / 109 | 119 / 114 / 117 |
+
+The lever moves the plateau by 4-11 req/s — inside the 10-20% run-to-run
+variance this document already claims. **The ten-connection pool is not the
+binding constraint once the page reads are batched**, so the baseline's
+"proven ceiling is the pool" was an inference from CPU and backend counts, not
+a tested one.
+
+**The change.** `GET /api/v1/accounts/{id}/statuses` built each row through
+`statuses::dto`, which reads the author's picture shapes, the attachments, the
+decorations and the viewer flags per row, and `can_view` again per row. It now
+calls the page seam the HTML readers already use (`pages::hydrate_statuses`,
+`pub(crate)` at `crates/api/src/pages.rs:257`; the call is at
+`crates/api/src/statuses.rs:775`), so the read set is a property of the page,
+not its length. `crates/api/tests/picture_batching.rs:376` measures the same
+endpoint at one post and twenty and requires the statement count not to grow.
+
+**What the numbers say.** Batching cut the request's statements 245 → 15 and
+`profile_statuses` p50 at 200 VUs 5086 → 2164 ms (p99 14284 → 4675 ms), but the
+mix still plateaus at ~110 req/s and 25 connections do not lift it. The reads
+were not the ceiling. The only statement Postgres still reports slow is
+`UPDATE oauth_token SET last_used_at = now() WHERE token_hash = $1`, at
+1.0-2.6 s of execution time (normally microseconds), on **every** authenticated
+request, against the **one** token row all 200 VUs share. That serialisation is
+consistent with a flat ceiling that neither batching nor pool size moves. It was
+not isolated further in this budget; the next change to measure is the
+60-second throttle the `auth_session` table already uses
+(`crates/auth/src/store.rs:455`).
+
+**Caveat on attribution.** The baseline image was built at 11:15
+(`sha256:17c43e6f…`); the after run is the current source plus this change
+(`sha256:d5c6cde3…`), which also carries the commits landed since (profile
+banners, the email outbox, browser sessions). `home_timeline`, `notifications`
+and `profile` got *slower* for reasons outside this change — the comparison is
+only attributable for `profile_statuses`, the endpoint the change rewrites.
+
+**Unrelated regression in this run.** The write mix now answers 422 on
+`status_create` for 828 of 5,975 requests (14%), which the baseline did not, so
+the write table above is not comparable; the status itself is created by hand
+with the same token. That is a media-attachment validation or queueing change in
+the newer image, not touched here.
+
 ## A defect this run exposed in the harness
 
 `seed.py` clears a previous bulk seed with `DELETE FROM media_attachment WHERE
