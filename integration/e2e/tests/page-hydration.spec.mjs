@@ -19,6 +19,11 @@
 //  3. a second visit to the same thread is still zero subject reads per load, so a
 //     "hydrate on every mount" regression fails here.
 //
+// The subject is Grace (`PROFILE_HANDLE`) and the viewer is Ada: the profile assertion
+// below deliberately names a relationship the viewer actually has. Mastodon answers
+// `null` for a viewer's own relationship, so an own profile could not prove the island
+// carried one even when it did.
+//
 // The page read itself happens server-side, while the document is rendered
 // (web/crates/web-server/src/pages.rs, `read_entity_with` -> `reads.profile_page` /
 // `reads.status_page`), so it is invisible to `page.on('request')` and cannot be counted
@@ -27,18 +32,22 @@
 // for the handle form (the extra is the explicit `COMMIT`), and the thread page at 12. One
 // assertion, one owner.
 //
-// The lab's running images predate this wiring (built 2026-11-23 00:08 CET for web and
-// 01:42 UTC for the server, while the pages commits land at 03:14 CET and later), so each
-// test is marked fixme with that as the stated reason instead of being weakened to pass
-// against a shell that has no island.
+// The lab's running images predate this wiring (built 2026-11-23 04:22-04:25 UTC, while
+// the pages commits and the instance-host fix land later), so each test is marked fixme
+// with that as the stated reason instead of being weakened to pass against a shell that
+// paints the old path.
 //
-// What the stale lab answered when the gate was lifted for one run (2026-11-23): the
-// pre-`pages` renderer assembles the thread server-side and paints the same
-// {"kind":"thread"} island, so "the island exists" does not discriminate the new wiring;
-// the browser made zero /api/v1/pages/ reads. On the profile island the pre-pages path
-// carried account and statuses but `relationship` was undefined, because the old
-// multi-call path fetched it separately. Assertion 2's relationship check is the one that
-// discriminated in that probe; assertion 1 is what fails if hydration starts re-fetching.
+// What the gate-lifted run answered on 2026-11-23: the pre-`pages` renderer assembles the
+// thread server-side and paints the same {"kind":"thread"} island, so "the island exists"
+// does not discriminate the new wiring; the browser made zero /api/v1/pages/ reads. On the
+// profile island the pre-pages path carried account and statuses but `relationship` was
+// `null` (the pre-pages renderer passes `None`). That null was NOT a signed-out paint: the
+// session was signed in and the API's `/api/v1/pages/profile/{id}` answered
+// `{following:true}` for the same reader. The gate asked `serves_pages` about `""`, because
+// a local session's acct (`"ada"`) has no `@host` and `read_entity_with` derived the host
+// from `split_once('@')` instead of the session's own host. Assertion 2's relationship
+// check is the one that discriminates; assertion 1 is what fails if hydration starts
+// re-fetching.
 
 import { expect, test } from '@playwright/test';
 
@@ -46,7 +55,7 @@ import { ACCOUNTS, BASE_URL, INSTANCE_HOST, POSTS, PROFILE_HANDLE } from '../fix
 import { signIn } from '../helpers/session.mjs';
 
 const FIXME_REASON =
-  'the lab image predates the page-hydration wiring; re-enable after the next build-from-pins';
+  'the lab image predates the instance-host fix for local sessions; re-enable after the next build-from-pins';
 
 /// Whether the lab's shell can serve a page at all: `pages` is what the server asks
 /// capabilities::serves_pages before it takes the one-read path. A lab whose handshake
@@ -204,9 +213,11 @@ test('the island carries the fields the client trusts', async ({ page, request }
     0,
   );
   // Ada follows Grace in the seed (`follow "$ADA_TOKEN" "$GRACE_ID" grace`), so this is
-  // the relationship the one-read payload must carry. On the stale image it was undefined:
-  // the old multi-call path fetched it separately, which is exactly the regression this
-  // assertion names.
+  // the relationship the one-read payload must carry. On the stale image it was null:
+  // the pre-pages path did not ask for a relationship at all. The subject is asserted to
+  // be someone else's profile first, because a viewer's own relationship is null by
+  // design and would make this assertion say nothing.
+  expect(String(profile.account?.acct), 'the subject is not the viewer').not.toBe(session.acct);
   expect(
     profile.relationship,
     'the one-read profile carries the viewer relationship',
