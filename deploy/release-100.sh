@@ -112,6 +112,23 @@ REMOTE
   log "   glibc gate: binary needs <= GLIBC_$need, CT $CT has $have"
 }
 
+# Caddy's asset handler serves `<asset>.zst` / `<asset>.gz` when the client offers the
+# encoding (see integration/Caddyfile and deploy/docker/Caddyfile). The builder emits them
+# too, but a bundle can reach this script from a host-side build that did not, and the
+# tarball is the last point before production. The helper refuses to run without `zstd`,
+# so a missing tool is a failed deploy rather than a bundle that silently ships 6.2 MB.
+precompress_bundle() {
+  local dist=$1 script count
+  script=$(
+    unset CDPATH
+    cd -- "$(dirname -- "$0")" && pwd
+  )/precompress-bundle.sh
+  [ -f "$script" ] || { log "FAIL: precompression helper not found: $script"; return 1; }
+  sh "$script" "$dist" || { log "FAIL: could not precompress the bundle in $dist"; return 1; }
+  count=$(find "$dist" -type f -name '*.zst' | wc -l)
+  log "   precompressed: $count .zst and $count .gz siblings"
+}
+
 push_artifact() {
   local src=$1 dest=$2 local_sha host_sha ct_sha
   [ -f "$src" ] || { log "missing artifact $src"; return 1; }
@@ -416,6 +433,7 @@ main() {
   log "deploying $binary + $dist -> $HOST CT $CT (stamp $STAMP)"
   log "-- phase 0: check the target can run this build, then pack the bundle --"
   glibc_gate "$binary"
+  precompress_bundle "$dist"
   tar -C "$dist" -czf "$TARBALL" .
   tar_sha=$(sha256sum "$TARBALL" | cut -d' ' -f1)
   log "   tarball sha256=$tar_sha ($(du -h "$TARBALL" | cut -f1))"

@@ -40,7 +40,7 @@ ARG TRUNK_VERSION=0.22.1
 # `binaryen` puts `wasm-opt` on PATH, which is where trunk looks before it downloads its
 # own copy: a build must not fail because that download timed out.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends nodejs npm curl ca-certificates xz-utils binaryen \
+ && apt-get install -y --no-install-recommends nodejs npm curl ca-certificates xz-utils binaryen gzip zstd \
  && rm -rf /var/lib/apt/lists/*
 RUN curl -fsSL "https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" \
       | tar -xz -C /usr/local/bin trunk
@@ -54,7 +54,8 @@ RUN npm ci --no-audit --no-fund --include=optional
 # resolved. Without it `node:path`-based tailwind 4 plugins fail to load.
 RUN node -e "const {version} = require('./node_modules/@tailwindcss/oxide/package.json');\
 require('child_process').execSync('npm install --no-save --no-audit --no-fund @tailwindcss/oxide-linux-x64-gnu@' + version, {stdio: 'inherit'});" 
-RUN node js/build.mjs && node js/css.mjs && trunk build --release
+RUN node js/build.mjs && node js/css.mjs && trunk build --release \
+ && sh /src/deploy/precompress-bundle.sh /src/web/dist
 
 FROM debian:bookworm-slim AS runtime
 ENV DEBIAN_FRONTEND=noninteractive \

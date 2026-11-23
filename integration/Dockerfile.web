@@ -52,7 +52,7 @@ ARG NODE_VERSION=22-bookworm-slim
 # stage takes node 22 from its own image. trunk and wasm-opt are pinned prebuilt releases,
 # because compiling either would cost more than the artifacts they produce.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends curl ca-certificates xz-utils \
+ && apt-get install -y --no-install-recommends curl ca-certificates xz-utils gzip zstd \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=node-dist /usr/local/bin/node /usr/local/bin/node
 COPY --from=node-dist /usr/local/lib/node_modules /usr/local/lib/node_modules
@@ -89,7 +89,8 @@ require('child_process').execSync('npm install --no-save --no-audit --no-fund @t
 RUN --mount=type=cache,target=/usr/local/cargo/registry,id=nodus-cargo-registry \
     --mount=type=cache,target=/usr/local/cargo/git,id=nodus-cargo-git \
     --mount=type=cache,target=/src/web/target,id=nodus-web-wasm-target \
-    node js/build.mjs && node js/css.mjs && trunk build --release
+    node js/build.mjs && node js/css.mjs && trunk build --release \
+ && sh /src/deploy/precompress-bundle.sh /src/web/dist
 
 FROM debian:bookworm-slim AS runtime
 ENV DEBIAN_FRONTEND=noninteractive

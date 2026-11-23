@@ -99,7 +99,17 @@
 	handle @assets {
 		root * /srv/nodus
 		header Cache-Control "public, max-age=31536000, immutable"
-		file_server
+		# `precompressed` only sets this on the responses it encodes; without it an
+		# identity response is cacheable as if it were the only variant.
+		header Vary Accept-Encoding
+		# The bundle ships `.zst`/`.gz` siblings next to every hashed asset. The encoder
+		# above skips `application/wasm`, so without this the wasm is 6.2 MB on every
+		# first visit. `precompressed` falls back to the identity file when a sibling is
+		# absent, which is what keeps an un-compressed asset a slow response rather than
+		# a 404.
+		file_server {
+			precompressed zstd gzip
+		}
 	}
 
 	# Page routes are server-rendered; the app decides what to draw.
