@@ -1,28 +1,40 @@
 #!/usr/bin/env bash
-# Deploys the server-rendered web shell — the `nodus-server` binary plus the wasm
-# bundle — to LXC 100 and rolls the pair back as one unit.
+# Deploys the server-rendered web shell — the `nodus-server` binary, the wasm bundle,
+# and the Caddy site block that serves it — to LXC 100 and rolls them back as one unit.
 #
 # On this container `nodus-server` is the web shell, not the API: nodus-ssr.service
-# runs it with NODUS_ASSET_DIR=/srv/nodus behind Caddy on 127.0.0.1:8080. Binary and
-# bundle are one release, so they move together or neither does. Every artifact and
-# every backup is hashed where it lands before any live path changes, and index.html
-# is checked against the files it names while the bundle is still staged in
-# /srv/nodus.new — a bundle that does not match its own integrity hashes fails there,
+# runs it with NODUS_ASSET_DIR=/srv/nodus behind Caddy on 127.0.0.1:8080. Binary, bundle
+# and deploy/ct100/nodus.caddy are one release: they move together or neither does.
+# Every artifact and every backup is hashed where it lands before any live path changes,
+# and index.html is checked against the files it names while the bundle is still staged
+# in /srv/nodus.new — a bundle that does not match its own integrity hashes fails there,
 # before the live tree is touched.
+#
+# The Caddy file is installed only after `caddy validate` accepts it against the live
+# /etc/caddy/Caddyfile, and the release fails unless the served wasm answers
+# `content-encoding: zstd`. Shipping `.zst`/`.gz` siblings to a server whose asset
+# handler ignores them is the failure this script exists to make impossible.
 set -Eeuo pipefail
 
 HOST=${HOST:-root@hyper.luxuride.eu}
 CT=${CT:-100}
+SITE=${SITE:-nodus.luxuride.eu}
 UNIT=nodus-ssr
 BIN=/usr/local/bin/nodus-server
 ASSET_DIR=/srv/nodus
-STAGE=/srv/nodus.new
 PREFLIGHT_PORT=${PREFLIGHT_PORT:-18081}
 
 BINARY_STAGE=/root/nodus-web-server.new
 TARBALL_STAGE=/root/nodus-dist.new.tar.gz
+CADDY_STAGE=/root/nodus.caddy.new
+CADDY_CONF=/etc/caddy/nodus.caddy
+CADDY_SRC=$(
+  unset CDPATH
+  cd -- "$(dirname -- "$0")" && pwd
+)/ct100/nodus.caddy
 
 SWAPPED=0
+CADDY_INSTALLED=0
 TARBALL=''
 INSTALLED_SHA=''
 EXPECTED_JS=''
@@ -50,7 +62,7 @@ USAGE
 host_run() {
   {
     printf 'set -euo pipefail\n'
-    printf 'CT=%q\nSTAMP=%q\nUNIT=%q\nPREFLIGHT_PORT=%q\n' "$CT" "$STAMP" "$UNIT" "$PREFLIGHT_PORT"
+    printf 'CT=%q\nSTAMP=%q\nUNIT=%q\nPREFLIGHT_PORT=%q\nSITE=%q\n' "$CT" "$STAMP" "$UNIT" "$PREFLIGHT_PORT" "$SITE"
     cat
   } | ssh "$HOST" bash -s
 }
@@ -59,8 +71,8 @@ host_run() {
 # host and in the container, and /srv/nodus.new. Backups are never touched.
 cleanup_staging() {
   host_run <<'REMOTE'
-rm -f /root/nodus-web-server.new /root/nodus-dist.new.tar.gz /root/nodus-web-server.probe
-pct exec "$CT" -- bash -c 'rm -f /root/nodus-web-server.new /root/nodus-dist.new.tar.gz /root/nodus-web-server.probe; rm -rf /srv/nodus.new'
+rm -f /root/nodus-web-server.new /root/nodus-dist.new.tar.gz /root/nodus-web-server.probe /root/nodus.caddy.new
+pct exec "$CT" -- bash -c 'rm -f /root/nodus-web-server.new /root/nodus-dist.new.tar.gz /root/nodus-web-server.probe /root/nodus.caddy.new; rm -rf /srv/nodus.new'
 true
 REMOTE
 }
@@ -166,6 +178,69 @@ pct exec "$CT" -- bash -c '
   [ "$live_sha" = "$bak_sha" ] || { echo "backup mismatch for $live: $live_sha != $bak_sha" >&2; exit 1; }
   printf "   %s sha256=%s\n" "$bak" "$bak_sha"
 ' _ /usr/local/bin/nodus-server "$STAMP"
+REMOTE
+}
+
+# The Caddy site block is part of the release: back it up with the same stamp as the
+# binary and bundle so `--rollback` can put the whole set back.
+backup_caddy() {
+  host_run <<'REMOTE'
+pct exec "$CT" -- bash -c '
+  set -euo pipefail
+  live=$1
+  bak=$live.bak-$2
+  [ -f "$live" ] || { echo "missing live caddy config $live" >&2; exit 1; }
+  cp -f "$live" "$bak"
+  live_sha=$(sha256sum "$live" | cut -d" " -f1)
+  bak_sha=$(sha256sum "$bak" | cut -d" " -f1)
+  [ "$live_sha" = "$bak_sha" ] || { echo "backup mismatch for $live: $live_sha != $bak_sha" >&2; exit 1; }
+  printf "   %s sha256=%s\n" "$bak" "$bak_sha"
+' _ /etc/caddy/nodus.caddy "$STAMP"
+REMOTE
+}
+
+# Installs the candidate but does not reload: Caddy keeps answering with the loaded
+# config until `reload_caddy`. If validation fails, the backup goes back on disk so a
+# later restart cannot pick up a file this script refused.
+install_caddy() {
+  host_run <<'REMOTE'
+pct exec "$CT" -- bash -c '
+  set -euo pipefail
+  conf=$1
+  main=$2
+  bak=$conf.bak-$3
+  install -o root -g root -m 644 /root/nodus.caddy.new "$conf"
+  if ! out=$(caddy validate --config "$main" 2>&1); then
+    printf "%s\n" "$out" | sed "s/^/   /" >&2
+    install -o root -g root -m 644 "$bak" "$conf"
+    echo "FAIL: caddy validate rejected the new $conf; restored $bak, Caddy still runs its previous config" >&2
+    exit 1
+  fi
+  echo "   caddy validate --config $main: valid"
+' _ /etc/caddy/nodus.caddy /etc/caddy/Caddyfile "$STAMP"
+REMOTE
+}
+
+reload_caddy() {
+  host_run <<'REMOTE'
+pct exec "$CT" -- systemctl reload caddy || {
+  echo "FAIL: caddy reload of /etc/caddy/nodus.caddy failed" >&2
+  exit 1
+}
+echo "   caddy reloaded"
+REMOTE
+}
+
+restore_caddy() {
+  host_run <<'REMOTE'
+pct exec "$CT" -- bash -c '
+  set -euo pipefail
+  conf=$1
+  bak=$conf.bak-$2
+  [ -f "$bak" ] || { echo "missing caddy backup $bak" >&2; exit 1; }
+  install -o root -g root -m 644 "$bak" "$conf"
+  echo "   restored $conf from $bak"
+' _ /etc/caddy/nodus.caddy "$STAMP"
 REMOTE
 }
 
@@ -297,6 +372,58 @@ pct exec "$CT" -- bash -c '
 REMOTE
 }
 
+# The guard that makes this release own the handler: ask Caddy for the hashed wasm
+# with each encoding and read what came back. Identity 6.2 MB with no
+# `content-encoding: zstd` means the `.zst` sibling was shipped but the asset handler
+# that is actually loaded does not use it — exactly the drift this release prevents.
+# Sizes are printed for all three variants so the release log records the bytes served.
+check_wasm_encoding() {
+  local out asset identity_bytes gzip_bytes zstd_bytes zstd_enc
+  out=$(host_run <<'REMOTE'
+pct exec "$CT" -- bash -c '
+  set -uo pipefail
+  site=$1
+  shift
+  wasm=$(curl -s http://127.0.0.1:8080/ | grep -oE "nodus-web-[a-z0-9]+_bg\.wasm" | sort -u | head -1)
+  [ -n "$wasm" ] || { echo "FAIL: the served index.html names no *_bg.wasm; cannot check the asset handler" >&2; exit 1; }
+  printf "asset %s\n" "$wasm"
+  probe() {
+    enc=$1
+    hdr=$(mktemp)
+    args=(-sS -o /dev/null -D "$hdr" --resolve "$site:443:127.0.0.1")
+    [ "$enc" != identity ] && args+=(-H "Accept-Encoding: $enc")
+    meta=$(curl "${args[@]}" -w "%{http_code} %{size_download}" "https://$site/$wasm")
+    status=$?
+    if [ "$status" -ne 0 ]; then
+      rm -f "$hdr"
+      echo "FAIL: GET $wasm with Accept-Encoding: $enc failed (curl status $status)" >&2
+      exit 1
+    fi
+    set -- $meta
+    got=$(tr -d "\r" <"$hdr" | grep -i "^content-encoding:" | tail -1 | sed "s/^[^:]*: *//")
+    printf "encoding %s %s %s %s\n" "$enc" "$1" "${got:-identity}" "$2"
+    rm -f "$hdr"
+  }
+  probe identity
+  probe gzip
+  probe zstd
+' _ "$SITE"
+REMOTE
+)
+  printf '%s\n' "$out" | sed 's/^/   /'
+  asset=$(printf '%s\n' "$out" | awk '$1 == "asset" { print $2; exit }')
+  identity_bytes=$(printf '%s\n' "$out" | awk '$1 == "encoding" && $2 == "identity" { print $5; exit }')
+  gzip_bytes=$(printf '%s\n' "$out" | awk '$1 == "encoding" && $2 == "gzip" { print $5; exit }')
+  zstd_enc=$(printf '%s\n' "$out" | awk '$1 == "encoding" && $2 == "zstd" { print $4; exit }')
+  zstd_bytes=$(printf '%s\n' "$out" | awk '$1 == "encoding" && $2 == "zstd" { print $5; exit }')
+  if [ "$zstd_enc" != zstd ]; then
+    log "FAIL: /$asset answered content-encoding '${zstd_enc:-none}' (${zstd_bytes:-?} bytes) for Accept-Encoding: zstd, identity is ${identity_bytes:-?} bytes"
+    log "      the .zst sibling was shipped but the loaded @assets handler does not serve it; release refused"
+    return 1
+  fi
+  log "   wasm $asset: identity ${identity_bytes:-?} / gzip ${gzip_bytes:-?} / zstd ${zstd_bytes:-?} bytes (content-encoding zstd)"
+}
+
 check_live() {
   local want_sha=$1 code served installed_sha errors
   wait_active || { log "FAIL: nodus-ssr.service did not become active"; return 1; }
@@ -329,6 +456,8 @@ REMOTE
   errors=$(journal_errors)
   [ -z "$errors" ] || { printf '%s\n' "$errors" >&2; log "FAIL: nodus-ssr logged ERROR or panicked in the last 3 minutes"; return 1; }
 
+  check_wasm_encoding || return 1
+
   INSTALLED_SHA=$installed_sha
   log "   nodus-ssr active, /healthz 200, serving $served, installed sha256=$installed_sha"
   log "   journal clean (no ERROR/panicked in the last 3 minutes)"
@@ -345,15 +474,20 @@ pct exec "$CT" -- bash -c '
   failed=$live.failed-$1
   bin=/usr/local/bin/nodus-server
   binbak=$bin.bak-$1
+  caddy=/etc/caddy/nodus.caddy
+  caddybak=$caddy.bak-$1
   [ -d "$bak" ] || { echo "missing tree backup $bak" >&2; exit 1; }
   [ -f "$binbak" ] || { echo "missing binary backup $binbak" >&2; exit 1; }
+  [ -f "$caddybak" ] || { echo "missing caddy backup $caddybak" >&2; exit 1; }
   systemctl stop nodus-ssr
   rm -rf "$failed"
   [ -d "$live" ] && mv "$live" "$failed"
   mv "$bak" "$live"
   install -o root -g root -m 755 "$binbak" "$bin"
+  install -o root -g root -m 644 "$caddybak" "$caddy"
   systemctl start nodus-ssr
-  echo "   restored $live from $bak and $bin from $binbak"
+  systemctl reload caddy
+  echo "   restored $live from $bak, $bin from $binbak, and $caddy from $caddybak"
 ' _ "$STAMP"
 REMOTE
   wait_active || { log "ROLLBACK FAILED: nodus-ssr.service is not active"; return 1; }
@@ -370,7 +504,7 @@ REMOTE
 pct exec "$CT" -- bash -c 'curl -s http://127.0.0.1:8080/ | grep -oE "nodus-web-[a-z0-9]+" | sort -u | head -1'
 REMOTE
 )
-  log "rollback complete: nodus-ssr active, /healthz=200, serving ${served:-unknown}"
+  log "rollback complete: nodus-ssr active, /healthz=200, serving ${served:-unknown}, caddy config restored"
 }
 
 deploy_failed() {
@@ -379,13 +513,21 @@ deploy_failed() {
   set +e
   printf '\n*** DEPLOY FAILED (status %s) ***\n' "$code" >&2
   if [ "$SWAPPED" != 1 ]; then
+    if [ "$CADDY_INSTALLED" = 1 ]; then
+      # The candidate is on disk but was never reloaded; put the backup back so a
+      # later restart cannot load a config this release refused.
+      ( set -e; restore_caddy ) || {
+        printf 'ROLLBACK FAILED: could not restore /etc/caddy/nodus.caddy; inspect now.\n' >&2
+        cleanup_staging
+        exit 2
+      }
+    fi
     printf 'The live tree and binary never moved; production is untouched, nothing to roll back.\n' >&2
     cleanup_staging
     exit "$code"
   fi
-  ( set -e; do_rollback "$STAMP" )
-  if [ $? -eq 0 ]; then
-    printf 'ROLLBACK COMPLETE: the previous tree and binary are live again.\n' >&2
+  if ( set -e; do_rollback "$STAMP" ); then
+    printf 'ROLLBACK COMPLETE: the previous tree, binary and caddy config are live again.\n' >&2
   else
     printf 'ROLLBACK FAILED: production state is inconsistent, inspect now.\n' >&2
     cleanup_staging
@@ -438,32 +580,41 @@ main() {
   tar_sha=$(sha256sum "$TARBALL" | cut -d' ' -f1)
   log "   tarball sha256=$tar_sha ($(du -h "$TARBALL" | cut -f1))"
 
-  log "-- phase 1: push and verify both artifacts inside CT $CT --"
+  [ -f "$CADDY_SRC" ] || { log "caddy config not found: $CADDY_SRC"; return 1; }
+
+  log "-- phase 1: push and verify the binary, bundle and caddy config inside CT $CT --"
   push_artifact "$binary" "$BINARY_STAGE"
   push_artifact "$TARBALL" "$TARBALL_STAGE"
+  push_artifact "$CADDY_SRC" "$CADDY_STAGE"
   [ "$(host_run <<REMOTE
 pct exec "\$CT" -- sha256sum "$TARBALL_STAGE" | cut -d' ' -f1
 REMOTE
 )" = "$tar_sha" ] || { log "FAIL: staged bundle tarball sha does not match the local one"; return 1; }
 
-  log "-- phase 2: back up the live binary and verify the backup --"
+  log "-- phase 2: back up the live binary and caddy config, and verify both backups --"
   unit_state=$(host_run <<'REMOTE'
 pct exec "$CT" -- systemctl is-active nodus-ssr 2>/dev/null || true
 REMOTE
 )
   log "   unit before deploy: ${unit_state:-unknown}"
   backup_binary
+  backup_caddy
 
   log "-- phase 3: stage the bundle and check it against its own index.html --"
   stage_bundle
   verify_bundle
   preflight_binary
 
-  log "-- phase 4: swap tree and binary under a stopped unit --"
+  log "-- phase 4: install and validate the caddy config (not yet loaded) --"
+  install_caddy
+  CADDY_INSTALLED=1
+
+  log "-- phase 5: swap tree and binary, then reload caddy --"
   swap
   SWAPPED=1
+  reload_caddy
 
-  log "-- phase 5: verify what is live --"
+  log "-- phase 6: verify what is live, including the precompressed wasm --"
   check_live "$want_sha"
 
   trap - ERR
@@ -473,7 +624,8 @@ REMOTE
   log "   CT            $CT ($HOST)"
   log "   binary        $BIN sha256=$INSTALLED_SHA"
   log "   bundle        scripts $EXPECTED_JS served from $ASSET_DIR"
-  log "   backups       $ASSET_DIR.bak-$STAMP and $BIN.bak-$STAMP"
+  log "   caddy         $CADDY_CONF reloaded from deploy/ct100/nodus.caddy"
+  log "   backups       $ASSET_DIR.bak-$STAMP, $BIN.bak-$STAMP and $CADDY_CONF.bak-$STAMP"
   log "   rollback      $0 --rollback $STAMP"
   log "DEPLOY OK"
 }

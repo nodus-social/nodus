@@ -1,0 +1,14 @@
+# Throwaway ingress for integration/scripts/precompressed-check.sh.
+#
+# The site block itself is deploy/ct100/nodus.caddy, mounted beside this wrapper and
+# imported verbatim. The check rewrites only its listener line to `http://:80` — a
+# workstation has no certificate for nodus.luxuride.eu — so the asset handler under
+# test is the production one and not a copy that can drift from it.
+#
+# The admin endpoint stays on (default localhost:2019) because the check drives the
+# validate -> install -> reload sequence, which is what the release script does.
+{
+	auto_https off
+}
+
+import nodus.caddy

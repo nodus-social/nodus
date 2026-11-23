@@ -1,0 +1,212 @@
+# The nodus.luxuride.eu site block that CT 100 runs, copied from
+# /etc/caddy/nodus.caddy and owned by deploy/release-100.sh from here on.
+#
+# This file is authoritative for the asset handler. `@assets` plus
+# `file_server { precompressed zstd gzip }` is the only thing that makes the
+# `.zst` / `.gz` siblings in /srv/nodus reach a client; without it Caddy answers
+# the 6.2 MB identity wasm and the bundle's compressed siblings are dead weight.
+# deploy/docker/Caddyfile and integration/Caddyfile carry the same handler for
+# their own ingress: when this block changes, change them with it.
+#
+# deploy/release-100.sh installs this file, validates it against
+# /etc/caddy/Caddyfile before reloading, and fails the release if the served wasm
+# answers without content-encoding: zstd.
+# nodus.luxuride.eu — the wasm client, the API it calls, and a debug build.
+#
+# The client is a static bundle: every route answers with index.html and the app decides
+# what to render. Hashed assets are immutable; index.html is not, because a stale one
+# points at assets that no longer exist.
+#
+# Three processes answer here: the server-rendered shell on this LXC (127.0.0.1:8080),
+# the recommendation service on 10.0.1.18:3002, and the Mastodon-compatible backend on
+# 10.0.1.18:3001. They are separate processes with separate sockets: an engine that is slow
+# to answer must not queue the API behind it. Mutually exclusive handles are ordered by path specificity, so the
+# recommender's specific paths win over the backend's /api/* fallback.
+
+nodus.luxuride.eu {
+	encode zstd gzip
+
+	# The session is the shell's own state: sign-in, theme, instance choice.
+	handle /api/session {
+		reverse_proxy 127.0.0.1:8080
+		header Cache-Control "no-store"
+	}
+	handle /api/session/style {
+		reverse_proxy 127.0.0.1:8080
+	}
+
+	# The instance icon is the backend's own asset; it carries a file extension, so the
+	# static-asset handle below would look for it in the bundle and miss.
+	handle /icon.svg {
+		reverse_proxy 10.0.1.18:3001
+	}
+	handle /icon.png {
+		reverse_proxy 10.0.1.18:3001
+	}
+	handle /favicon.ico {
+		reverse_proxy 10.0.1.18:3001
+	}
+
+	# ---- recommendation engine (10.0.1.18:3002) ----
+	# The handshake is the API's: it is the process that serves the doors and panels the
+	# console gates on this list. The feed service keeps its own handler for a direct caller.
+	handle /api/v1/meta {
+		reverse_proxy 10.0.1.18:3001
+	}
+	handle /api/v1/feed/* {
+		reverse_proxy 10.0.1.18:3002
+	}
+	handle /api/v1/browse {
+		reverse_proxy 10.0.1.18:3002
+	}
+	handle /api/v1/events {
+		reverse_proxy 10.0.1.18:3002
+	}
+	handle /api/v1/feedback/* {
+		reverse_proxy 10.0.1.18:3002
+	}
+	handle /api/v1/me {
+		reverse_proxy 10.0.1.18:3002
+	}
+	handle /api/v1/sync/* {
+		reverse_proxy 10.0.1.18:3002
+	}
+	handle /healthz {
+		reverse_proxy 10.0.1.18:3001
+	}
+	handle /readyz {
+		reverse_proxy 10.0.1.18:3001
+	}
+
+	# The shared-post page is unfurled by the engine for a crawler that runs no JavaScript.
+	handle /s/* {
+		reverse_proxy 10.0.1.18:3002
+	}
+
+	# A chat client wants meta tags, a person wants the app: same URL, two answers.
+	# The crawler runs no JavaScript, so it is forwarded to the server-rendered share
+	# page, which describes the post in <meta> tags and caches the unfurl (Redis).
+	@crawler {
+		method GET
+		header_regexp User-Agent (?i)(discordbot|twitterbot|facebookexternalhit|slackbot|telegrambot|whatsapp|linkedinbot|mastodon|pleroma|misskey|akkoma)
+		path_regexp share ^/status/(?P<host>[^/]+)/(?P<id>[^/]+)/?$
+	}
+	handle @crawler {
+		rewrite * /s/{re.share.host}/{re.share.id}
+		reverse_proxy 10.0.1.18:3001
+	}
+
+	# ---- nodus backend (10.0.1.18:3001) ----
+	# The OAuth callback is a page in the app, not a backend endpoint: it must reach the
+	# shell so the code in the query string is exchanged client-side.
+	handle /oauth/callback {
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle /oauth/* {
+		reverse_proxy 10.0.1.18:3001
+	}
+	handle /auth/* {
+		reverse_proxy 10.0.1.18:3001
+	}
+	handle /users/* {
+		reverse_proxy 10.0.1.18:3001
+	}
+	# An ActivityPub peer fetches the keyId directly: it must reach the backend's JSON,
+	# never the SSR shell, or the signature can never verify.
+	handle /actor {
+		reverse_proxy 10.0.1.18:3001
+	}
+
+	handle /inbox {
+		reverse_proxy 10.0.1.18:3001
+	}
+	handle /statuses/* {
+		reverse_proxy 10.0.1.18:3001
+	}
+	# The instance's own image is part of the app, not an upload.
+	handle /media/thumbnail.png {
+		reverse_proxy 10.0.1.18:3001
+	}
+	# Share links are minted and verified by the API, which holds the secret; the media
+	# service serves catalogue-backed bytes and would read "share" as an object id.
+	handle /media/share/* {
+		reverse_proxy 10.0.1.18:3001
+	}
+	# Uploaded bytes are their own service: a large file read must not queue the API.
+	# Two media nodes on CT 118. This build of Caddy 2.6 names the request-URI hash
+	# uri_hash, so one blob always resolves to the same node, and lb_try_duration
+	# lets the other answer while that node restarts.
+	handle /media/* {
+		reverse_proxy 10.0.1.18:3003 10.0.1.18:3005 {
+			lb_policy uri_hash
+			lb_try_duration 2s
+		}
+	}
+	handle /.well-known/* {
+		reverse_proxy 10.0.1.18:3001
+	}
+
+	# NodeInfo 2.0 lives at the domain ROOT, not under /.well-known: the discovery
+	# document advertises this exact URL, so it has to reach the API instead of the
+	# shell's catch-all (which answers with HTML and no data).
+	handle /nodeinfo/* {
+		reverse_proxy 10.0.1.18:3001
+	}
+
+	# Everything else below /api is the Mastodon-compatible API: /api/v1/*, /api/v2/*,
+	# /api/i/*, /api/meta, /api/notes/*, /api/users/*, /api/miauth/*. The recommender's
+	# own paths above are longer, so they are matched first.
+	handle /api/* {
+		reverse_proxy 10.0.1.18:3001 10.0.1.18:3004 {
+			lb_policy round_robin
+			lb_try_duration 2s
+		}
+	}
+
+	# Symbols for diagnosing a panic in the field: the same app built without
+	# optimisation, served beside the real one.
+	handle_path /debug/* {
+		root * /srv/nodus-debug
+		try_files {path} /index.html
+		file_server
+	}
+
+
+	# Every page route is server-rendered: the first paint is the application's chrome,
+	# and "/" and "/home" carry the reader's timeline too (docs/06-ssr.md). Only files with
+	# an extension stay on disk, because those are the bundle's hashed assets.
+	@assets path_regexp \.(js|wasm|css|png|jpg|jpeg|svg|ico|webp|woff2?|map|txt|json)$
+	handle @assets {
+		root * /srv/nodus
+		# The bundle ships .zst/.gz siblings; Caddy"s encoder skips application/wasm, so
+		# without this the wasm is 6.2 MB on every first visit. A missing sibling falls back
+		# to the identity file, so an uncompressed asset is slow rather than absent.
+		header Vary Accept-Encoding
+		file_server {
+			precompressed zstd gzip
+		}
+
+		header /*.wasm Content-Type application/wasm
+		header /*.js Cache-Control "public, max-age=31536000, immutable"
+		header /*.css Cache-Control "public, max-age=31536000, immutable"
+	}
+
+	handle {
+		header Cache-Control "no-store"
+		reverse_proxy 127.0.0.1:8080
+	}
+
+	# The `handle` above matches every request, and `handle` blocks are exclusive, so
+	# this second fallback is unreachable. It is kept because it is in the file Caddy
+	# has loaded; removing it is a behaviour-preserving cleanup, not a release step.
+	handle {
+		root * /srv/nodus
+		try_files {path} /index.html
+		file_server
+
+		header /*.wasm Content-Type application/wasm
+		header /*.js Cache-Control "public, max-age=31536000, immutable"
+		header /*.css Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
+	}
+}
