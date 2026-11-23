@@ -81,11 +81,18 @@ export async function prepareVisualPage(page, scope) {
 /// not a property of the page in the screenshot. A mask on the badge agrees only
 /// with the state that happened to be current when the baseline was captured;
 /// the link's box is the same with or without it.
-export function volatileMasks(page) {
+///
+/// A navigator picture that claims the bell must not mask the link itself: the
+/// mask would hide whether the door exists. `notificationDoor: 'badge'` masks
+/// only the count, so the bell row is part of the picture while the count stays
+/// volatile.
+export function volatileMasks(page, { notificationDoor = 'link' } = {}) {
   return [
     page.locator('time'),
     page.locator('[datetime]'),
     page.locator('header a[href*="/status/"]'),
-    page.locator('a[href="/notifications"]'),
+    notificationDoor === 'badge'
+      ? page.locator('[data-notice-count]')
+      : page.locator('a[href="/notifications"]'),
   ];
 }

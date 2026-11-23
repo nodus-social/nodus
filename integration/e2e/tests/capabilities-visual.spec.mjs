@@ -199,6 +199,11 @@ async function railPicture(page, name, doors) {
       `the rail holds ${doors} staff card(s)`,
     ).toBe(true);
   }
+  // The notifications probe answers after the first paint: until it does, the
+  // bell row does not exist and a shot taken then is the pre-probe rail. Wait
+  // for the door itself, not for a timeout, so the picture pins the navigator
+  // the reader actually gets.
+  await expect(rail.locator('[data-notice-bell]')).toBeVisible();
   await rail.evaluate((element, frame) => {
     element.style.alignSelf = 'flex-start';
     element.style.height = 'auto';
@@ -206,7 +211,10 @@ async function railPicture(page, name, doors) {
     element.style.height = `${Math.max(Math.ceil(height), frame)}px`;
   }, RAIL_FRAME_HEIGHT);
   await expect(rail).toHaveScreenshot(name, {
-    mask: [...volatileMasks(page), page.locator('[data-rail-profile] img')],
+    mask: [
+      ...volatileMasks(page, { notificationDoor: 'badge' }),
+      page.locator('[data-rail-profile] img'),
+    ],
   });
 }
 
