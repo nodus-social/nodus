@@ -30,6 +30,13 @@ BACKUPS_READY=0
 
 log() { printf '%s\n' "$*"; }
 
+SCRIPT_DIR=$(
+    unset CDPATH
+    cd -- "$(dirname -- "$0")" && pwd
+)
+# shellcheck source=artifact-manifest.sh
+. "$SCRIPT_DIR/artifact-manifest.sh"
+
 usage() {
     cat <<'USAGE'
 usage: release-118.sh <artifact-dir> <stamp>
@@ -165,7 +172,8 @@ pct exec "$CT" -- systemctl restart "$NAME.service"
 REMOTE
         if [ "$twin" = nodus-api2 ]; then
             for _ in $(seq 1 90); do
-                code=$(host_run "$twin" <<'REMOTE'
+                code=$(
+                    host_run "$twin" <<'REMOTE'
 pct exec "$CT" -- curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:3004/healthz" || true
 REMOTE
                 )
@@ -545,6 +553,7 @@ main() {
 
     log "deploying $ART -> $HOST CT $CT (stamp $STAMP)"
     log "-- phase 0: preflight, before any service is touched --"
+    artifact_manifest_check "$ART" backend || exit 1
     glibc_preflight
     runtime_prerequisites
 

@@ -28,10 +28,15 @@ BINARY_STAGE=/root/nodus-web-server.new
 TARBALL_STAGE=/root/nodus-dist.new.tar.gz
 CADDY_STAGE=/root/nodus.caddy.new
 CADDY_CONF=/etc/caddy/nodus.caddy
-CADDY_SRC=$(
-  unset CDPATH
-  cd -- "$(dirname -- "$0")" && pwd
-)/ct100/nodus.caddy
+
+SCRIPT_DIR=$(
+    unset CDPATH
+    cd -- "$(dirname -- "$0")" && pwd
+)
+# shellcheck source=artifact-manifest.sh
+. "$SCRIPT_DIR/artifact-manifest.sh"
+
+CADDY_SRC=$SCRIPT_DIR/ct100/nodus.caddy
 
 SWAPPED=0
 CADDY_INSTALLED=0
@@ -42,7 +47,7 @@ EXPECTED_JS=''
 log() { printf '%s\n' "$*"; }
 
 usage() {
-  cat <<'USAGE'
+    cat <<'USAGE'
 usage: release-100.sh <server-binary> <dist-dir> <stamp>
        release-100.sh --rollback <stamp>
 
@@ -60,17 +65,17 @@ USAGE
 # expanded here.
 # The host login shell is fish, hence `ssh ... bash -s` rather than a command string.
 host_run() {
-  {
-    printf 'set -euo pipefail\n'
-    printf 'CT=%q\nSTAMP=%q\nUNIT=%q\nPREFLIGHT_PORT=%q\nSITE=%q\n' "$CT" "$STAMP" "$UNIT" "$PREFLIGHT_PORT" "$SITE"
-    cat
-  } | ssh "$HOST" bash -s
+    {
+        printf 'set -euo pipefail\n'
+        printf 'CT=%q\nSTAMP=%q\nUNIT=%q\nPREFLIGHT_PORT=%q\nSITE=%q\n' "$CT" "$STAMP" "$UNIT" "$PREFLIGHT_PORT" "$SITE"
+        cat
+    } | ssh "$HOST" bash -s
 }
 
 # Removes only the staging files this script created: the pushed artifacts on the
 # host and in the container, and /srv/nodus.new. Backups are never touched.
 cleanup_staging() {
-  host_run <<'REMOTE'
+    host_run <<'REMOTE'
 rm -f /root/nodus-web-server.new /root/nodus-dist.new.tar.gz /root/nodus-web-server.probe /root/nodus.caddy.new
 pct exec "$CT" -- bash -c 'rm -f /root/nodus-web-server.new /root/nodus-dist.new.tar.gz /root/nodus-web-server.probe /root/nodus.caddy.new; rm -rf /srv/nodus.new'
 true
@@ -78,25 +83,27 @@ REMOTE
 }
 
 wait_active() {
-  local state
-  for _ in $(seq 1 30); do
-    state=$(host_run <<'REMOTE'
+    local state
+    for _ in $(seq 1 30); do
+        state=$(
+            host_run <<'REMOTE'
 pct exec "$CT" -- systemctl is-active "$UNIT" 2>/dev/null || true
 REMOTE
-)
-    [ "$state" = active ] && return 0
-    sleep 1
-  done
-  return 1
+        )
+        [ "$state" = active ] && return 0
+        sleep 1
+    done
+    return 1
 }
 
 journal_errors() {
-  local hits
-  hits=$(host_run <<'REMOTE'
+    local hits
+    hits=$(
+        host_run <<'REMOTE'
 pct exec "$CT" -- bash -c 'journalctl -u nodus-ssr --since "-3min" --no-pager -o cat | grep -E "ERROR|panicked" || true'
 REMOTE
-)
-  printf '%s' "$hits"
+    )
+    printf '%s' "$hits"
 }
 
 # A binary built elsewhere carries the libc it was linked against. One built against a
@@ -105,23 +112,30 @@ REMOTE
 # production rather than a failed deploy. Compare the highest symbol version the
 # artifact needs with the container's ldd before pushing 22 MB at it.
 glibc_gate() {
-  local binary=$1 need have
-  command -v objdump >/dev/null 2>&1 || { log "FAIL: objdump is needed to read the binary's glibc needs"; return 1; }
-  need=$(objdump -T "$binary" 2>/dev/null | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sed 's/^GLIBC_//' | sort -Vu | tail -1)
-  if [ -z "$need" ]; then
-    log "   glibc gate: no versioned glibc symbols (static binary), skipping"
-    return 0
-  fi
-  have=$(host_run <<'REMOTE'
+    local binary=$1 need have
+    command -v objdump >/dev/null 2>&1 || {
+        log "FAIL: objdump is needed to read the binary's glibc needs"
+        return 1
+    }
+    need=$(objdump -T "$binary" 2>/dev/null | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sed 's/^GLIBC_//' | sort -Vu | tail -1)
+    if [ -z "$need" ]; then
+        log "   glibc gate: no versioned glibc symbols (static binary), skipping"
+        return 0
+    fi
+    have=$(
+        host_run <<'REMOTE'
 pct exec "$CT" -- bash -c 'ldd --version | head -1' | grep -oE '[0-9]+\.[0-9]+$'
 REMOTE
-)
-  [ -n "$have" ] || { log "FAIL: glibc gate could not read the container's ldd version"; return 1; }
-  if [ "$(printf '%s\n%s\n' "$need" "$have" | sort -V | tail -1)" != "$have" ]; then
-    log "FAIL: the binary needs GLIBC_$need but CT $CT has $have; build it against the container's libc"
-    return 1
-  fi
-  log "   glibc gate: binary needs <= GLIBC_$need, CT $CT has $have"
+    )
+    [ -n "$have" ] || {
+        log "FAIL: glibc gate could not read the container's ldd version"
+        return 1
+    }
+    if [ "$(printf '%s\n%s\n' "$need" "$have" | sort -V | tail -1)" != "$have" ]; then
+        log "FAIL: the binary needs GLIBC_$need but CT $CT has $have; build it against the container's libc"
+        return 1
+    fi
+    log "   glibc gate: binary needs <= GLIBC_$need, CT $CT has $have"
 }
 
 # Caddy's asset handler serves `<asset>.zst` / `<asset>.gz` when the client offers the
@@ -130,43 +144,60 @@ REMOTE
 # tarball is the last point before production. The helper refuses to run without `zstd`,
 # so a missing tool is a failed deploy rather than a bundle that silently ships 6.2 MB.
 precompress_bundle() {
-  local dist=$1 script count
-  script=$(
-    unset CDPATH
-    cd -- "$(dirname -- "$0")" && pwd
-  )/precompress-bundle.sh
-  [ -f "$script" ] || { log "FAIL: precompression helper not found: $script"; return 1; }
-  sh "$script" "$dist" || { log "FAIL: could not precompress the bundle in $dist"; return 1; }
-  count=$(find "$dist" -type f -name '*.zst' | wc -l)
-  log "   precompressed: $count .zst and $count .gz siblings"
+    local dist=$1 script count
+    script=$(
+        unset CDPATH
+        cd -- "$(dirname -- "$0")" && pwd
+    )/precompress-bundle.sh
+    [ -f "$script" ] || {
+        log "FAIL: precompression helper not found: $script"
+        return 1
+    }
+    sh "$script" "$dist" || {
+        log "FAIL: could not precompress the bundle in $dist"
+        return 1
+    }
+    count=$(find "$dist" -type f -name '*.zst' | wc -l)
+    log "   precompressed: $count .zst and $count .gz siblings"
 }
 
 push_artifact() {
-  local src=$1 dest=$2 local_sha host_sha ct_sha
-  [ -f "$src" ] || { log "missing artifact $src"; return 1; }
-  local_sha=$(sha256sum "$src" | cut -d' ' -f1)
-  scp -q "$src" "$HOST:$dest"
-  host_sha=$(host_run <<REMOTE
+    local src=$1 dest=$2 local_sha host_sha ct_sha
+    [ -f "$src" ] || {
+        log "missing artifact $src"
+        return 1
+    }
+    local_sha=$(sha256sum "$src" | cut -d' ' -f1)
+    scp -q "$src" "$HOST:$dest"
+    host_sha=$(
+        host_run <<REMOTE
 sha256sum "$dest" | cut -d' ' -f1
 REMOTE
-)
-  [ "$host_sha" = "$local_sha" ] || { log "FAIL: host staging sha $host_sha != local $local_sha for $dest"; return 1; }
-  host_run <<REMOTE
+    )
+    [ "$host_sha" = "$local_sha" ] || {
+        log "FAIL: host staging sha $host_sha != local $local_sha for $dest"
+        return 1
+    }
+    host_run <<REMOTE
 pct push "$CT" "$dest" "$dest"
 REMOTE
-  ct_sha=$(host_run <<REMOTE
+    ct_sha=$(
+        host_run <<REMOTE
 pct exec "\$CT" -- sha256sum "$dest" | cut -d' ' -f1
 REMOTE
-)
-  [ "$ct_sha" = "$local_sha" ] || { log "FAIL: container staging sha $ct_sha != local $local_sha for $dest"; return 1; }
-  log "   staged $dest sha256=$ct_sha"
+    )
+    [ "$ct_sha" = "$local_sha" ] || {
+        log "FAIL: container staging sha $ct_sha != local $local_sha for $dest"
+        return 1
+    }
+    log "   staged $dest sha256=$ct_sha"
 }
 
 # The live binary is copied and the copy is hashed before anything else moves: a
 # backup that is taken after the unit stops can capture the new file or a truncated
 # one, which is how a rollback path quietly stops existing.
 backup_binary() {
-  host_run <<'REMOTE'
+    host_run <<'REMOTE'
 pct exec "$CT" -- bash -c '
   set -euo pipefail
   live=$1
@@ -184,7 +215,7 @@ REMOTE
 # The Caddy site block is part of the release: back it up with the same stamp as the
 # binary and bundle so `--rollback` can put the whole set back.
 backup_caddy() {
-  host_run <<'REMOTE'
+    host_run <<'REMOTE'
 pct exec "$CT" -- bash -c '
   set -euo pipefail
   live=$1
@@ -203,7 +234,7 @@ REMOTE
 # config until `reload_caddy`. If validation fails, the backup goes back on disk so a
 # later restart cannot pick up a file this script refused.
 install_caddy() {
-  host_run <<'REMOTE'
+    host_run <<'REMOTE'
 pct exec "$CT" -- bash -c '
   set -euo pipefail
   conf=$1
@@ -222,7 +253,7 @@ REMOTE
 }
 
 reload_caddy() {
-  host_run <<'REMOTE'
+    host_run <<'REMOTE'
 pct exec "$CT" -- systemctl reload caddy || {
   echo "FAIL: caddy reload of /etc/caddy/nodus.caddy failed" >&2
   exit 1
@@ -232,7 +263,7 @@ REMOTE
 }
 
 restore_caddy() {
-  host_run <<'REMOTE'
+    host_run <<'REMOTE'
 pct exec "$CT" -- bash -c '
   set -euo pipefail
   conf=$1
@@ -248,7 +279,7 @@ REMOTE
 # Every sha384 entry must match the bytes of the file it names, and every hash-named
 # asset the page references must exist in the staged tree.
 stage_bundle() {
-  host_run <<'REMOTE'
+    host_run <<'REMOTE'
 pct exec "$CT" -- bash -c '
   set -euo pipefail
   stage=/srv/nodus.new
@@ -259,12 +290,13 @@ pct exec "$CT" -- bash -c '
   chown -R caddy:caddy "$stage"
 ' 
 REMOTE
-  log "   unpacked /srv/nodus.new"
+    log "   unpacked /srv/nodus.new"
 }
 
 verify_bundle() {
-  local out
-  out=$(host_run <<'REMOTE'
+    local out
+    out=$(
+        host_run <<'REMOTE'
 pct exec "$CT" -- python3 - /srv/nodus.new <<'PY'
 import base64, hashlib, re, sys, pathlib
 
@@ -308,17 +340,20 @@ print(f"   verified {len(tags)} sha384 entr{'y' if len(tags) == 1 else 'ies'} ag
 print(f"   script={script}")
 PY
 REMOTE
-)
-  printf '%s\n' "$out"
-  EXPECTED_JS=$(printf '%s\n' "$out" | sed -n 's/^ *script=\(nodus-web-[a-z0-9]*\.js\)$/\1/p')
-  [ -n "$EXPECTED_JS" ] || { log "FAIL: could not read the bundle's script name from the staged index.html"; return 1; }
+    )
+    printf '%s\n' "$out"
+    EXPECTED_JS=$(printf '%s\n' "$out" | sed -n 's/^ *script=\(nodus-web-[a-z0-9]*\.js\)$/\1/p')
+    [ -n "$EXPECTED_JS" ] || {
+        log "FAIL: could not read the bundle's script name from the staged index.html"
+        return 1
+    }
 }
 
 # Runs the pushed binary against the staged tree on a scratch port. A binary that
 # cannot start here — wrong libc, missing assets — is found now, while the live tree
 # is still live, instead of after the swap.
 preflight_binary() {
-  host_run <<'REMOTE'
+    host_run <<'REMOTE'
 pct exec "$CT" -- bash -c '
   set -uo pipefail
   port=$1
@@ -353,7 +388,7 @@ REMOTE
 }
 
 swap() {
-  host_run <<'REMOTE'
+    host_run <<'REMOTE'
 pct exec "$CT" -- bash -c '
   set -euo pipefail
   bin=/usr/local/bin/nodus-server
@@ -378,8 +413,9 @@ REMOTE
 # that is actually loaded does not use it — exactly the drift this release prevents.
 # Sizes are printed for all three variants so the release log records the bytes served.
 check_wasm_encoding() {
-  local out asset identity_bytes gzip_bytes zstd_bytes zstd_enc
-  out=$(host_run <<'REMOTE'
+    local out asset identity_bytes gzip_bytes zstd_bytes zstd_enc
+    out=$(
+        host_run <<'REMOTE'
 pct exec "$CT" -- bash -c '
   set -uo pipefail
   site=$1
@@ -409,64 +445,80 @@ pct exec "$CT" -- bash -c '
   probe zstd
 ' _ "$SITE"
 REMOTE
-)
-  printf '%s\n' "$out" | sed 's/^/   /'
-  asset=$(printf '%s\n' "$out" | awk '$1 == "asset" { print $2; exit }')
-  identity_bytes=$(printf '%s\n' "$out" | awk '$1 == "encoding" && $2 == "identity" { print $5; exit }')
-  gzip_bytes=$(printf '%s\n' "$out" | awk '$1 == "encoding" && $2 == "gzip" { print $5; exit }')
-  zstd_enc=$(printf '%s\n' "$out" | awk '$1 == "encoding" && $2 == "zstd" { print $4; exit }')
-  zstd_bytes=$(printf '%s\n' "$out" | awk '$1 == "encoding" && $2 == "zstd" { print $5; exit }')
-  if [ "$zstd_enc" != zstd ]; then
-    log "FAIL: /$asset answered content-encoding '${zstd_enc:-none}' (${zstd_bytes:-?} bytes) for Accept-Encoding: zstd, identity is ${identity_bytes:-?} bytes"
-    log "      the .zst sibling was shipped but the loaded @assets handler does not serve it; release refused"
-    return 1
-  fi
-  log "   wasm $asset: identity ${identity_bytes:-?} / gzip ${gzip_bytes:-?} / zstd ${zstd_bytes:-?} bytes (content-encoding zstd)"
+    )
+    printf '%s\n' "$out" | sed 's/^/   /'
+    asset=$(printf '%s\n' "$out" | awk '$1 == "asset" { print $2; exit }')
+    identity_bytes=$(printf '%s\n' "$out" | awk '$1 == "encoding" && $2 == "identity" { print $5; exit }')
+    gzip_bytes=$(printf '%s\n' "$out" | awk '$1 == "encoding" && $2 == "gzip" { print $5; exit }')
+    zstd_enc=$(printf '%s\n' "$out" | awk '$1 == "encoding" && $2 == "zstd" { print $4; exit }')
+    zstd_bytes=$(printf '%s\n' "$out" | awk '$1 == "encoding" && $2 == "zstd" { print $5; exit }')
+    if [ "$zstd_enc" != zstd ]; then
+        log "FAIL: /$asset answered content-encoding '${zstd_enc:-none}' (${zstd_bytes:-?} bytes) for Accept-Encoding: zstd, identity is ${identity_bytes:-?} bytes"
+        log "      the .zst sibling was shipped but the loaded @assets handler does not serve it; release refused"
+        return 1
+    fi
+    log "   wasm $asset: identity ${identity_bytes:-?} / gzip ${gzip_bytes:-?} / zstd ${zstd_bytes:-?} bytes (content-encoding zstd)"
 }
 
 check_live() {
-  local want_sha=$1 code served installed_sha errors
-  wait_active || { log "FAIL: nodus-ssr.service did not become active"; return 1; }
+    local want_sha=$1 code served installed_sha errors
+    wait_active || {
+        log "FAIL: nodus-ssr.service did not become active"
+        return 1
+    }
 
-  for _ in $(seq 1 20); do
-    code=$(host_run <<'REMOTE'
+    for _ in $(seq 1 20); do
+        code=$(
+            host_run <<'REMOTE'
 pct exec "$CT" -- curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/healthz || true
 REMOTE
-)
-    [ "$code" = 200 ] && break
-    sleep 1
-  done
-  [ "$code" = 200 ] || { log "FAIL: /healthz returned ${code:-nothing} on 127.0.0.1:8080, want 200"; return 1; }
+        )
+        [ "$code" = 200 ] && break
+        sleep 1
+    done
+    [ "$code" = 200 ] || {
+        log "FAIL: /healthz returned ${code:-nothing} on 127.0.0.1:8080, want 200"
+        return 1
+    }
 
-  served=$(host_run <<'REMOTE'
+    served=$(
+        host_run <<'REMOTE'
 pct exec "$CT" -- bash -c 'curl -s http://127.0.0.1:8080/ | grep -oE "nodus-web-[a-z0-9]+" | sort -u | head -1'
 REMOTE
-)
-  [ "$served" = "${EXPECTED_JS%.js}" ] || {
-    log "FAIL: / serves ${served:-nothing}, want ${EXPECTED_JS%.js} from the staged bundle"
-    return 1
-  }
+    )
+    [ "$served" = "${EXPECTED_JS%.js}" ] || {
+        log "FAIL: / serves ${served:-nothing}, want ${EXPECTED_JS%.js} from the staged bundle"
+        return 1
+    }
 
-  installed_sha=$(host_run <<'REMOTE'
+    installed_sha=$(
+        host_run <<'REMOTE'
 pct exec "$CT" -- sha256sum /usr/local/bin/nodus-server | cut -d' ' -f1
 REMOTE
-)
-  [ "$installed_sha" = "$want_sha" ] || { log "FAIL: installed binary sha $installed_sha != artifact $want_sha"; return 1; }
+    )
+    [ "$installed_sha" = "$want_sha" ] || {
+        log "FAIL: installed binary sha $installed_sha != artifact $want_sha"
+        return 1
+    }
 
-  errors=$(journal_errors)
-  [ -z "$errors" ] || { printf '%s\n' "$errors" >&2; log "FAIL: nodus-ssr logged ERROR or panicked in the last 3 minutes"; return 1; }
+    errors=$(journal_errors)
+    [ -z "$errors" ] || {
+        printf '%s\n' "$errors" >&2
+        log "FAIL: nodus-ssr logged ERROR or panicked in the last 3 minutes"
+        return 1
+    }
 
-  check_wasm_encoding || return 1
+    check_wasm_encoding || return 1
 
-  INSTALLED_SHA=$installed_sha
-  log "   nodus-ssr active, /healthz 200, serving $served, installed sha256=$installed_sha"
-  log "   journal clean (no ERROR/panicked in the last 3 minutes)"
+    INSTALLED_SHA=$installed_sha
+    log "   nodus-ssr active, /healthz 200, serving $served, installed sha256=$installed_sha"
+    log "   journal clean (no ERROR/panicked in the last 3 minutes)"
 }
 
 do_rollback() {
-  local stamp=$1 code served
-  log "=== rolling back CT $CT to .bak-$stamp ==="
-  host_run <<'REMOTE'
+    local stamp=$1 code served
+    log "=== rolling back CT $CT to .bak-$stamp ==="
+    host_run <<'REMOTE'
 pct exec "$CT" -- bash -c '
   set -euo pipefail
   live=/srv/nodus
@@ -490,144 +542,194 @@ pct exec "$CT" -- bash -c '
   echo "   restored $live from $bak, $bin from $binbak, and $caddy from $caddybak"
 ' _ "$STAMP"
 REMOTE
-  wait_active || { log "ROLLBACK FAILED: nodus-ssr.service is not active"; return 1; }
-  for _ in $(seq 1 20); do
-    code=$(host_run <<'REMOTE'
+    wait_active || {
+        log "ROLLBACK FAILED: nodus-ssr.service is not active"
+        return 1
+    }
+    for _ in $(seq 1 20); do
+        code=$(
+            host_run <<'REMOTE'
 pct exec "$CT" -- curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/healthz || true
 REMOTE
-)
-    [ "$code" = 200 ] && break
-    sleep 1
-  done
-  [ "$code" = 200 ] || { log "ROLLBACK FAILED: /healthz is ${code:-nothing}"; return 1; }
-  served=$(host_run <<'REMOTE'
+        )
+        [ "$code" = 200 ] && break
+        sleep 1
+    done
+    [ "$code" = 200 ] || {
+        log "ROLLBACK FAILED: /healthz is ${code:-nothing}"
+        return 1
+    }
+    served=$(
+        host_run <<'REMOTE'
 pct exec "$CT" -- bash -c 'curl -s http://127.0.0.1:8080/ | grep -oE "nodus-web-[a-z0-9]+" | sort -u | head -1'
 REMOTE
-)
-  log "rollback complete: nodus-ssr active, /healthz=200, serving ${served:-unknown}, caddy config restored"
+    )
+    log "rollback complete: nodus-ssr active, /healthz=200, serving ${served:-unknown}, caddy config restored"
 }
 
 deploy_failed() {
-  local code=${1:-1}
-  trap - ERR
-  set +e
-  printf '\n*** DEPLOY FAILED (status %s) ***\n' "$code" >&2
-  if [ "$SWAPPED" != 1 ]; then
-    if [ "$CADDY_INSTALLED" = 1 ]; then
-      # The candidate is on disk but was never reloaded; put the backup back so a
-      # later restart cannot load a config this release refused.
-      ( set -e; restore_caddy ) || {
-        printf 'ROLLBACK FAILED: could not restore /etc/caddy/nodus.caddy; inspect now.\n' >&2
+    local code=${1:-1}
+    trap - ERR
+    set +e
+    printf '\n*** DEPLOY FAILED (status %s) ***\n' "$code" >&2
+    if [ "$SWAPPED" != 1 ]; then
+        if [ "$CADDY_INSTALLED" = 1 ]; then
+            # The candidate is on disk but was never reloaded; put the backup back so a
+            # later restart cannot load a config this release refused.
+            (
+                set -e
+                restore_caddy
+            ) || {
+                printf 'ROLLBACK FAILED: could not restore /etc/caddy/nodus.caddy; inspect now.\n' >&2
+                cleanup_staging
+                exit 2
+            }
+        fi
+        printf 'The live tree and binary never moved; production is untouched, nothing to roll back.\n' >&2
+        cleanup_staging
+        exit "$code"
+    fi
+    if (
+        set -e
+        do_rollback "$STAMP"
+    ); then
+        printf 'ROLLBACK COMPLETE: the previous tree, binary and caddy config are live again.\n' >&2
+    else
+        printf 'ROLLBACK FAILED: production state is inconsistent, inspect now.\n' >&2
         cleanup_staging
         exit 2
-      }
     fi
-    printf 'The live tree and binary never moved; production is untouched, nothing to roll back.\n' >&2
     cleanup_staging
     exit "$code"
-  fi
-  if ( set -e; do_rollback "$STAMP" ); then
-    printf 'ROLLBACK COMPLETE: the previous tree, binary and caddy config are live again.\n' >&2
-  else
-    printf 'ROLLBACK FAILED: production state is inconsistent, inspect now.\n' >&2
-    cleanup_staging
-    exit 2
-  fi
-  cleanup_staging
-  exit "$code"
 }
 
 main() {
-  local mode=deploy binary='' dist=''
+    local mode=deploy binary='' dist=''
 
-  if [ $# -eq 2 ] && [ "$1" = "--rollback" ]; then
-    mode=rollback
-    STAMP=$2
-  elif [ $# -eq 3 ]; then
-    binary=$1
-    dist=${2%/}
-    STAMP=$3
-  else
-    usage >&2
-    exit 2
-  fi
+    if [ $# -eq 2 ] && [ "$1" = "--rollback" ]; then
+        mode=rollback
+        STAMP=$2
+    elif [ $# -eq 3 ]; then
+        binary=$1
+        dist=${2%/}
+        STAMP=$3
+    else
+        usage >&2
+        exit 2
+    fi
 
-  case $STAMP in
-    ''|*[!A-Za-z0-9._-]*) log "stamp may contain only letters, digits, dot, underscore and dash"; exit 2 ;;
-  esac
+    case $STAMP in
+    '' | *[!A-Za-z0-9._-]*)
+        log "stamp may contain only letters, digits, dot, underscore and dash"
+        exit 2
+        ;;
+    esac
 
-  if [ "$mode" = rollback ]; then
-    do_rollback "$STAMP"
-    log "rollback exit OK"
-    exit 0
-  fi
+    if [ "$mode" = rollback ]; then
+        do_rollback "$STAMP"
+        log "rollback exit OK"
+        exit 0
+    fi
 
-  [ -f "$binary" ] || { log "server binary not found: $binary"; exit 2; }
-  [ -f "$dist/index.html" ] || { log "bundle directory has no index.html: $dist"; exit 2; }
+    [ -f "$binary" ] || {
+        log "server binary not found: $binary"
+        exit 2
+    }
+    [ -f "$dist/index.html" ] || {
+        log "bundle directory has no index.html: $dist"
+        exit 2
+    }
 
-  # TARBALL stays global so the EXIT trap can still name it after main returns.
-  local want_sha tar_sha unit_state
-  want_sha=$(sha256sum "$binary" | cut -d' ' -f1)
-  TARBALL=$(mktemp -t nodus-dist.XXXXXX.tar.gz)
-  trap 'rm -f "${TARBALL:-}"' EXIT
-  trap 'deploy_failed $?' ERR
+    # BUILD-INFO lives next to the artifact directory the builder filled. When it is
+    # present the passed binary must be the one it covers, not merely a binary of the
+    # right name; a directory without it is a hand-built set and is accepted as such.
+    local artifact_root passed_sha built_sha
+    artifact_root=$(
+        unset CDPATH
+        cd -- "$(dirname -- "$dist")" && pwd
+    )
+    artifact_manifest_check "$artifact_root" web || exit 2
+    if [ -f "$artifact_root/BUILD-INFO" ] && [ -f "$artifact_root/nodus-web-server" ]; then
+        passed_sha=$(sha256sum "$binary" | cut -d' ' -f1)
+        built_sha=$(sha256sum "$artifact_root/nodus-web-server" | cut -d' ' -f1)
+        [ "$passed_sha" = "$built_sha" ] || {
+            log "FAIL: the binary you passed is not the one BUILD-INFO covers"
+            log "      passed $passed_sha, built $built_sha"
+            exit 2
+        }
+    fi
 
-  log "deploying $binary + $dist -> $HOST CT $CT (stamp $STAMP)"
-  log "-- phase 0: check the target can run this build, then pack the bundle --"
-  glibc_gate "$binary"
-  precompress_bundle "$dist"
-  tar -C "$dist" -czf "$TARBALL" .
-  tar_sha=$(sha256sum "$TARBALL" | cut -d' ' -f1)
-  log "   tarball sha256=$tar_sha ($(du -h "$TARBALL" | cut -f1))"
+    # TARBALL stays global so the EXIT trap can still name it after main returns.
+    local want_sha tar_sha unit_state
+    want_sha=$(sha256sum "$binary" | cut -d' ' -f1)
+    TARBALL=$(mktemp -t nodus-dist.XXXXXX.tar.gz)
+    trap 'rm -f "${TARBALL:-}"' EXIT
+    trap 'deploy_failed $?' ERR
 
-  [ -f "$CADDY_SRC" ] || { log "caddy config not found: $CADDY_SRC"; return 1; }
+    log "deploying $binary + $dist -> $HOST CT $CT (stamp $STAMP)"
+    log "-- phase 0: check the target can run this build, then pack the bundle --"
+    glibc_gate "$binary"
+    precompress_bundle "$dist"
+    tar -C "$dist" -czf "$TARBALL" .
+    tar_sha=$(sha256sum "$TARBALL" | cut -d' ' -f1)
+    log "   tarball sha256=$tar_sha ($(du -h "$TARBALL" | cut -f1))"
 
-  log "-- phase 1: push and verify the binary, bundle and caddy config inside CT $CT --"
-  push_artifact "$binary" "$BINARY_STAGE"
-  push_artifact "$TARBALL" "$TARBALL_STAGE"
-  push_artifact "$CADDY_SRC" "$CADDY_STAGE"
-  [ "$(host_run <<REMOTE
+    [ -f "$CADDY_SRC" ] || {
+        log "caddy config not found: $CADDY_SRC"
+        return 1
+    }
+
+    log "-- phase 1: push and verify the binary, bundle and caddy config inside CT $CT --"
+    push_artifact "$binary" "$BINARY_STAGE"
+    push_artifact "$TARBALL" "$TARBALL_STAGE"
+    push_artifact "$CADDY_SRC" "$CADDY_STAGE"
+    [ "$(
+        host_run <<REMOTE
 pct exec "\$CT" -- sha256sum "$TARBALL_STAGE" | cut -d' ' -f1
 REMOTE
-)" = "$tar_sha" ] || { log "FAIL: staged bundle tarball sha does not match the local one"; return 1; }
+    )" = "$tar_sha" ] || {
+        log "FAIL: staged bundle tarball sha does not match the local one"
+        return 1
+    }
 
-  log "-- phase 2: back up the live binary and caddy config, and verify both backups --"
-  unit_state=$(host_run <<'REMOTE'
+    log "-- phase 2: back up the live binary and caddy config, and verify both backups --"
+    unit_state=$(
+        host_run <<'REMOTE'
 pct exec "$CT" -- systemctl is-active nodus-ssr 2>/dev/null || true
 REMOTE
-)
-  log "   unit before deploy: ${unit_state:-unknown}"
-  backup_binary
-  backup_caddy
+    )
+    log "   unit before deploy: ${unit_state:-unknown}"
+    backup_binary
+    backup_caddy
 
-  log "-- phase 3: stage the bundle and check it against its own index.html --"
-  stage_bundle
-  verify_bundle
-  preflight_binary
+    log "-- phase 3: stage the bundle and check it against its own index.html --"
+    stage_bundle
+    verify_bundle
+    preflight_binary
 
-  log "-- phase 4: install and validate the caddy config (not yet loaded) --"
-  install_caddy
-  CADDY_INSTALLED=1
+    log "-- phase 4: install and validate the caddy config (not yet loaded) --"
+    install_caddy
+    CADDY_INSTALLED=1
 
-  log "-- phase 5: swap tree and binary, then reload caddy --"
-  swap
-  SWAPPED=1
-  reload_caddy
+    log "-- phase 5: swap tree and binary, then reload caddy --"
+    swap
+    SWAPPED=1
+    reload_caddy
 
-  log "-- phase 6: verify what is live, including the precompressed wasm --"
-  check_live "$want_sha"
+    log "-- phase 6: verify what is live, including the precompressed wasm --"
+    check_live "$want_sha"
 
-  trap - ERR
-  cleanup_staging
-  log ""
-  log "=== deploy summary ==="
-  log "   CT            $CT ($HOST)"
-  log "   binary        $BIN sha256=$INSTALLED_SHA"
-  log "   bundle        scripts $EXPECTED_JS served from $ASSET_DIR"
-  log "   caddy         $CADDY_CONF reloaded from deploy/ct100/nodus.caddy"
-  log "   backups       $ASSET_DIR.bak-$STAMP, $BIN.bak-$STAMP and $CADDY_CONF.bak-$STAMP"
-  log "   rollback      $0 --rollback $STAMP"
-  log "DEPLOY OK"
+    trap - ERR
+    cleanup_staging
+    log ""
+    log "=== deploy summary ==="
+    log "   CT            $CT ($HOST)"
+    log "   binary        $BIN sha256=$INSTALLED_SHA"
+    log "   bundle        scripts $EXPECTED_JS served from $ASSET_DIR"
+    log "   caddy         $CADDY_CONF reloaded from deploy/ct100/nodus.caddy"
+    log "   backups       $ASSET_DIR.bak-$STAMP, $BIN.bak-$STAMP and $CADDY_CONF.bak-$STAMP"
+    log "   rollback      $0 --rollback $STAMP"
+    log "DEPLOY OK"
 }
 
 main "$@"
