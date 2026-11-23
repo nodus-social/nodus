@@ -9,7 +9,22 @@ set -Eeuo pipefail
 
 HOST=${HOST:-root@hyper.luxuride.eu}
 CT=${CT:-118}
-EXPECTED_FEATURES=62
+# The published vocabulary is one array in one file, with its length in the type:
+# `pub const FEATURES: [&str; 65] = [`. Reading the length from source instead of pinning a
+# number here is what keeps this check honest — a release that installs an older image than
+# the checkout fails, and adding a name does not require remembering to edit this script.
+# The count the checkout says it publishes, or empty when the file cannot be read (the check
+# below then reports the number it found without pretending to know what was wanted).
+feature_count_from_source() {
+    local repo source
+    repo=${REPO:-$(git rev-parse --show-toplevel 2>/dev/null || true)}
+    [ -n "$repo" ] || return 0
+    source="$repo/nodus-backend/crates/api/src/meta.rs"
+    [ -r "$source" ] || return 0
+    sed -n 's/^pub const FEATURES: \[&str; \([0-9][0-9]*\)\] = \[$/\1/p' "$source" | head -n 1
+}
+
+EXPECTED_FEATURES=${EXPECTED_FEATURES:-$(feature_count_from_source)}
 ROLES=(calc scan prune feed media api)
 BACKUPS_READY=0
 
@@ -149,7 +164,7 @@ pct exec "$CT" -- systemctl cat "$NAME.service" >/dev/null 2>&1 || exit 0
 pct exec "$CT" -- systemctl restart "$NAME.service"
 REMOTE
         if [ "$twin" = nodus-api2 ]; then
-            for i in $(seq 1 90); do
+            for _ in $(seq 1 90); do
                 code=$(host_run "$twin" <<'REMOTE'
 pct exec "$CT" -- curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:3004/healthz" || true
 REMOTE
@@ -173,8 +188,8 @@ REMOTE
 }
 
 wait_active() {
-    local role=$1 i state
-    for i in $(seq 1 30); do
+    local role=$1 state
+    for _ in $(seq 1 30); do
         state=$(
             host_run "$role" <<'REMOTE'
 pct exec "$CT" -- systemctl is-active "nodus-$NAME.service" 2>/dev/null || true
@@ -211,7 +226,7 @@ check_role() {
 
     case $role in
     api)
-        for i in $(seq 1 90); do
+        for _ in $(seq 1 90); do
             code=$(
                 host_run "$role" <<'REMOTE'
 pct exec "$CT" -- curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3001/healthz || true
@@ -227,7 +242,7 @@ REMOTE
         ;;
     feed | media)
         case $role in feed) port=3002 ;; media) port=3003 ;; esac
-        for i in $(seq 1 30); do
+        for _ in $(seq 1 30); do
             up=$(
                 host_run "$role" <<'REMOTE'
 pct exec "$CT" -- bash -c '
@@ -271,7 +286,7 @@ REMOTE
         esac
         ;;
     calc | scan | prune)
-        for i in $(seq 1 15); do
+        for _ in $(seq 1 15); do
             sock=$(
                 host_run "$role" <<'REMOTE'
 pct exec "$CT" -- test -S "/var/lib/nodus/run/$NAME.sock" && echo yes || true
