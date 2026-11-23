@@ -1,43 +1,44 @@
-// Functional: a signed-in profile or thread document arrives already hydrated, and each
-// load pays for its page once — the client does not fetch the subject a second time.
+// Functional: a signed-in profile or thread document arrives already hydrated, so the
+// browser never reads the subject for itself.
 //
 // The wiring under test: nodus-backend 9d3f232 + 143771f serve one snapshot per entity at
 // GET /api/v1/pages/profile/{id} and /api/v1/pages/status/{id} and advertise `pages` in
-// /api/v1/meta; web acc6754a paints the document from that one read and hands the same
-// payload to the client in the #nodus-page island; web 112c0800 gates it on
-// Feature::Pages.
+// /api/v1/meta; web 116f3f0 paints the document from that one read and hands the same
+// payload to the client in the #nodus-page island; web 7df9c54 gates it on the SDK's
+// published feature, and web 85507f1 seeds the profile relationship from the island.
 //
-// Three assertions:
+// Three assertions, each observed at the layer that can see it:
 //
-//  1. the document carries the payload: {kind:"thread", status, context} for /status/{id},
-//     {kind:"account", account, statuses, relationship, cursor} for /accounts/{id};
-//  2. one read of /api/v1/pages/ per load, and none of the older
-//     /api/v1/accounts/{id} + /api/v1/statuses/{id} reads for the same subject after the
-//     island has been adopted (that divergence is what the wiring removed);
-//  3. a second visit pays one read again (a page is stale-able), never one per mount.
+//  1. the browser makes no subject read: signed-in /status/{id} and /accounts/{id} issue
+//     zero requests for the subject under test — no /api/v1/pages/, no
+//     /api/v1/statuses/{id}, no /api/v1/statuses/{id}/context, no /api/v1/accounts/{id}.
+//     The document request is a navigation, not an XHR, and is asserted separately so a
+//     failed load cannot be mistaken for a clean zero;
+//  2. the island carries what the client trusts: `kind`, the thread's status id and its
+//     context arrays, the profile's account id, statuses and relationship;
+//  3. a second visit to the same thread is still zero subject reads per load, so a
+//     "hydrate on every mount" regression fails here.
 //
-// Where the read happens, recorded here so a future reader does not mistake a zero count
-// for a missing call: the server makes it while it renders the document
+// The page read itself happens server-side, while the document is rendered
 // (web/crates/web-server/src/pages.rs, `read_entity_with` -> `reads.profile_page` /
-// `reads.status_page`), so it is not visible to `page.on('request')`. The browser pays no
-// page read at all when the island is adoptable: seed.rs `install`/`adopt` fills the
-// account, relationship, statuses, status and context before the first component reads
-// them (web/crates/web-client/src/state/bridge/seed.rs), and the thread screen skips
-// `load_thread` when both are present (web/crates/route/src/route/screens/thread.rs:112).
-// Assertion 2 therefore pins the briefed count of 1 and is expected to fail at the next
-// build-from-pins; the number is left alone rather than lowered, because lowering it would
-// hide which side of the wire pays for the page.
+// `reads.status_page`), so it is invisible to `page.on('request')` and cannot be counted
+// from the browser. The count is proven where it happens: nodus-backend
+// crates/api/tests/pages.rs pins the profile page at 13 statements for the id form and 14
+// for the handle form (the extra is the explicit `COMMIT`), and the thread page at 12. One
+// assertion, one owner.
 //
 // The lab's running images predate this wiring (built 2026-11-23 00:08 CET for web and
 // 01:42 UTC for the server, while the pages commits land at 03:14 CET and later), so each
 // test is marked fixme with that as the stated reason instead of being weakened to pass
-// against a shell that has no island. What the stale lab did answer when the gate was
-// lifted for one run (2026-11-23): the thread document already carried a
-// {"kind":"thread"} island and the browser made zero /api/v1/pages/ and zero
-// /api/v1/statuses/{id} reads, because the pre-pages renderer assembles the thread
-// server-side and paints the same island; the profile island carried account and statuses
-// but no relationship. So the island alone does not prove the `pages` wiring; the page
-// count and the absence of the old subject reads are the discriminating observations.
+// against a shell that has no island.
+//
+// What the stale lab answered when the gate was lifted for one run (2026-11-23): the
+// pre-`pages` renderer assembles the thread server-side and paints the same
+// {"kind":"thread"} island, so "the island exists" does not discriminate the new wiring;
+// the browser made zero /api/v1/pages/ reads. On the profile island the pre-pages path
+// carried account and statuses but `relationship` was undefined, because the old
+// multi-call path fetched it separately. Assertion 2's relationship check is the one that
+// discriminated in that probe; assertion 1 is what fails if hydration starts re-fetching.
 
 import { expect, test } from '@playwright/test';
 
@@ -48,14 +49,18 @@ const FIXME_REASON =
   'the lab image predates the page-hydration wiring; re-enable after the next build-from-pins';
 
 /// Whether the lab's shell can serve a page at all: `pages` is what the server asks
-/// capabilities::serves_pages before it takes the one-read path.
+/// capabilities::serves_pages before it takes the one-read path. A lab whose handshake
+/// does not answer at all serves no pages either, so it skips for the same reason.
 let advertised;
 async function pagesAreServed(request) {
   if (advertised === undefined) {
     const meta = await request.get(`${BASE_URL}/api/v1/meta`);
-    expect(meta.ok(), `${BASE_URL}/api/v1/meta answers`).toBe(true);
-    const body = await meta.json();
-    advertised = Array.isArray(body.features) && body.features.includes('pages');
+    if (!meta.ok()) {
+      advertised = false;
+    } else {
+      const body = await meta.json();
+      advertised = Array.isArray(body.features) && body.features.includes('pages');
+    }
   }
   return advertised;
 }
@@ -96,128 +101,142 @@ async function subject(page, session) {
   };
 }
 
-/// Every request the browser makes while `url` loads and settles, in order.
+/// Every request the browser makes while `url` loads and settles, in order, with the kind
+/// of request so a navigation can be told from an XHR.
 ///
 /// Settling is network-idle rather than a timer: the claim is that the page makes no
 /// read, so a wait long enough to miss one would prove nothing.
 async function requestsDuring(page, url) {
-  const urls = [];
-  const record = (request) => urls.push(request.url());
+  const requests = [];
+  const record = (request) =>
+    requests.push({ url: request.url(), type: request.resourceType() });
   page.on('request', record);
   try {
     await page.goto(url);
     await page.waitForLoadState('networkidle');
-    return urls;
+    return requests;
   } finally {
     page.off('request', record);
   }
 }
 
-const pageReads = (urls) => urls.filter((url) => url.includes('/api/v1/pages/'));
+const pathOf = (url) => new URL(url).pathname;
 
-const subjectReads = (urls, id) =>
-  urls.filter(
-    (url) =>
-      url.includes(`/api/v1/accounts/${id}`) || url.includes(`/api/v1/statuses/${id}`),
-  );
+/// Any page-API read: the server should have made it, not the browser.
+const pageReads = (requests) =>
+  requests.filter((request) => pathOf(request.url).startsWith('/api/v1/pages/'));
 
-test('the signed-in thread document carries its island', async ({ page, request }) => {
-  test.fixme(!(await pagesAreServed(request)), FIXME_REASON);
-
-  const session = await signIn(page, ACCOUNTS.ada);
-  const { statusId } = await subject(page, session);
-
-  const handoff = await request.post(`${BASE_URL}/api/session`, {
-    data: { host: INSTANCE_HOST, token: session.token },
+/// Reads of the subject under test through the old per-entity endpoints. The prefix checks
+/// cover the suffixes that hydration used to fetch separately: `/statuses/{id}/context`
+/// and `/accounts/{id}/statuses`, `/accounts/{id}/relationships`.
+const subjectReads = (requests, id) =>
+  requests.filter(({ url }) => {
+    const path = pathOf(url);
+    return (
+      path === `/api/v1/statuses/${id}` ||
+      path.startsWith(`/api/v1/statuses/${id}/`) ||
+      path === `/api/v1/accounts/${id}` ||
+      path.startsWith(`/api/v1/accounts/${id}/`)
+    );
   });
-  expect(handoff.status(), 'the server accepted the proven token').toBe(200);
 
-  const response = await request.get(`${BASE_URL}/status/${statusId}`);
-  expect(response.status(), '/status/{id} answers a signed-in reader').toBe(200);
-  const html = await response.text();
-  expect(html, 'the document names the island kind in its bytes').toContain('"kind":"thread"');
+/// The document itself, so a zero read count is only accepted when the page actually
+/// loaded. `/status/{id}` and `/accounts/{id}` are navigations; nothing above matches them.
+const documentFor = (requests, path) =>
+  requests.filter((request) => request.type === 'document' && pathOf(request.url) === path);
 
-  const island = paintedIsland(html);
-  expect(island.kind).toBe('thread');
-  expect(String(island.status?.id)).toBe(statusId);
-  expect(Array.isArray(island.context?.ancestors)).toBe(true);
-  expect(Array.isArray(island.context?.descendants)).toBe(true);
-});
-
-test('the signed-in profile document carries its island', async ({ page, request }) => {
-  test.fixme(!(await pagesAreServed(request)), FIXME_REASON);
-
-  const session = await signIn(page, ACCOUNTS.ada);
-  const { accountId } = await subject(page, session);
-
-  const handoff = await request.post(`${BASE_URL}/api/session`, {
-    data: { host: INSTANCE_HOST, token: session.token },
-  });
-  expect(handoff.status(), 'the server accepted the proven token').toBe(200);
-
-  const response = await request.get(`${BASE_URL}/accounts/${accountId}`);
-  expect(response.status(), '/accounts/{id} answers a signed-in reader').toBe(200);
-  const html = await response.text();
-  expect(html, 'the document names the island kind in its bytes').toContain('"kind":"account"');
-
-  const island = paintedIsland(html);
-  expect(island.kind).toBe('account');
-  expect(String(island.account?.id)).toBe(accountId);
-  expect(Array.isArray(island.statuses)).toBe(true);
-  expect(
-    island.statuses.length,
-    'the first page of posts travels with the profile',
-  ).toBeGreaterThan(0);
-  // Ada follows Grace in the seed, and the relationship is part of the one-read payload:
-  // the profile effect must not fetch it again (web/crates/route/src/route/screens/account.rs).
-  expect(island.relationship?.following).toBe(true);
-});
-
-test('a thread and a profile pay one page read each, neither re-reads its subject', async ({
-  page,
-  request,
-}) => {
+test('a signed-in entity load makes no subject read from the browser', async ({ page, request }) => {
   test.fixme(!(await pagesAreServed(request)), FIXME_REASON);
 
   const session = await signIn(page, ACCOUNTS.ada);
   const { accountId, statusId, statusText } = await subject(page, session);
 
-  const thread = await requestsDuring(page, `/status/${statusId}`);
+  const threadPath = `/status/${statusId}`;
+  const thread = await requestsDuring(page, threadPath);
   await expect(page.getByText(statusText)).toBeVisible();
-  expect(pageReads(thread).length, 'the thread load pays exactly one page read').toBe(1);
+  expect(documentFor(thread, threadPath).length, 'the thread document was fetched').toBe(1);
+  expect(pageReads(thread), 'the browser never reads the page API; SSR already did').toEqual([]);
   expect(
-    subjectReads(thread, statusId).length,
+    subjectReads(thread, statusId),
     'hydration does not re-read the thread through /api/v1/statuses/{id}',
-  ).toBe(0);
+  ).toEqual([]);
 
-  const profile = await requestsDuring(page, `/accounts/nodus.test/${accountId}`);
+  const profilePath = `/accounts/${accountId}`;
+  const profile = await requestsDuring(page, profilePath);
   await expect(page.getByText(statusText)).toBeVisible();
-  expect(pageReads(profile).length, 'the profile load pays exactly one page read').toBe(1);
+  expect(documentFor(profile, profilePath).length, 'the profile document was fetched').toBe(1);
+  expect(pageReads(profile), 'the browser never reads the page API; SSR already did').toEqual([]);
   expect(
-    subjectReads(profile, accountId).length,
+    subjectReads(profile, accountId),
     'hydration does not re-read the profile through /api/v1/accounts/{id}',
-  ).toBe(0);
+  ).toEqual([]);
 });
 
-test('a second visit to the same thread pays one read per load, not one per mount', async ({
-  page,
-  request,
-}) => {
+test('the island carries the fields the client trusts', async ({ page, request }) => {
+  test.fixme(!(await pagesAreServed(request)), FIXME_REASON);
+
+  const session = await signIn(page, ACCOUNTS.ada);
+  const { accountId, statusId } = await subject(page, session);
+
+  const handoff = await request.post(`${BASE_URL}/api/session`, {
+    data: { host: INSTANCE_HOST, token: session.token },
+  });
+  expect(handoff.status(), 'the server accepted the proven token').toBe(200);
+
+  const threadResponse = await request.get(`${BASE_URL}/status/${statusId}`);
+  expect(threadResponse.status(), '/status/{id} answers a signed-in reader').toBe(200);
+  const thread = paintedIsland(await threadResponse.text());
+  expect(thread.kind).toBe('thread');
+  expect(String(thread.status?.id)).toBe(statusId);
+  expect(Array.isArray(thread.context?.ancestors)).toBe(true);
+  expect(Array.isArray(thread.context?.descendants)).toBe(true);
+  // The seed posts no replies (integration/scripts/seed.sh never sets in_reply_to_id), so
+  // there is nothing to be non-empty yet; when the fixture gains a reply, assert its id
+  // appears in `descendants` (and the ancestor's in `ancestors`).
+
+  const profileResponse = await request.get(`${BASE_URL}/accounts/${accountId}`);
+  expect(profileResponse.status(), '/accounts/{id} answers a signed-in reader').toBe(200);
+  const profile = paintedIsland(await profileResponse.text());
+  expect(profile.kind).toBe('account');
+  expect(String(profile.account?.id)).toBe(accountId);
+  expect(Array.isArray(profile.statuses)).toBe(true);
+  expect(profile.statuses.length, 'the first page of posts travels with the profile').toBeGreaterThan(
+    0,
+  );
+  // Ada follows Grace in the seed (`follow "$ADA_TOKEN" "$GRACE_ID" grace`), so this is
+  // the relationship the one-read payload must carry. On the stale image it was undefined:
+  // the old multi-call path fetched it separately, which is exactly the regression this
+  // assertion names.
+  expect(
+    profile.relationship,
+    'the one-read profile carries the viewer relationship',
+  ).toBeInstanceOf(Object);
+  expect(profile.relationship?.following).toBe(true);
+});
+
+test('a second visit is still zero subject reads per load', async ({ page, request }) => {
   test.fixme(!(await pagesAreServed(request)), FIXME_REASON);
 
   const session = await signIn(page, ACCOUNTS.ada);
   const { statusId, statusText } = await subject(page, session);
-  const url = `/status/${statusId}`;
+  const threadPath = `/status/${statusId}`;
 
-  const first = await requestsDuring(page, url);
+  const first = await requestsDuring(page, threadPath);
   await expect(page.getByText(statusText)).toBeVisible();
-  const second = await requestsDuring(page, url);
+  const second = await requestsDuring(page, threadPath);
   await expect(page.getByText(statusText)).toBeVisible();
 
-  expect(pageReads(first).length, 'the first load pays one page read').toBe(1);
-  expect(pageReads(second).length, 'the second load pays one page read, not a cached zero').toBe(1);
-  expect(
-    subjectReads(first, statusId).length + subjectReads(second, statusId).length,
-    'neither load re-reads the thread through /api/v1/statuses/{id}',
-  ).toBe(0);
+  for (const [name, requests] of [
+    ['first', first],
+    ['second', second],
+  ]) {
+    expect(documentFor(requests, threadPath).length, `the ${name} load fetched the document`).toBe(
+      1,
+    );
+    expect(pageReads(requests), `${name} load pays no page read in the browser`).toEqual([]);
+    expect(
+      subjectReads(requests, statusId),
+      `the ${name} load does not re-read the thread through /api/v1/statuses/{id}`,
+    ).toEqual([]);
+  }
 });
