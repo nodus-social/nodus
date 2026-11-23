@@ -1,0 +1,35 @@
+# The measurement stack's origin. Only three surfaces exist here: the API, the
+# media worker's bytes, and the health check the scripts wait on. There is no
+# shell, no feed and no peers, because the load scenarios address the API
+# directly and a missing route is a measurement error, not a fallback.
+#
+# The load stack is published on 127.0.0.1:18100 (compose.load.yml), not 8080:
+# the e2e lab owns that port and a measurement must not take its traffic.
+
+{
+	admin off
+	# Plain http only. The stack is a host-local target, and there is no
+	# federation peer here to dial https.
+	auto_https off
+	storage file_system /var/lib/nodus/caddy
+}
+
+:8080 {
+	encode zstd gzip
+
+	handle /healthz {
+		reverse_proxy nodus-load-api:3000
+	}
+
+	# Uploaded bytes and media variants belong to the media process. The API
+	# owns /media/share/*, but the load scenarios do not mint shares.
+	handle /media/* {
+		reverse_proxy nodus-load-media-worker:3003
+	}
+
+	handle {
+		reverse_proxy nodus-load-api:3000 {
+			flush_interval -1
+		}
+	}
+}

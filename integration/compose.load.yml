@@ -1,0 +1,150 @@
+# An isolated measurement stack, not the lab.
+#
+# It reuses the images, the `nodus-lab` network and the `nodus-lab-postgres`
+# container (a separate database, `nodusload`), and it owns everything that
+# would otherwise make a measurement poison `integration/e2e`:
+#
+#   - its own database, so no load row is ever visible to the e2e suite;
+#   - its own Valkey, because the cold-cache scenario runs FLUSHDB and that
+#     would erase the lab's home timelines;
+#   - its own media volume, so the load media fixture cannot shadow lab bytes;
+#   - its own Caddy on 127.0.0.1:18100, so the lab's 8080/18443 route table is
+#     untouched.
+#
+#   integration/scripts/load.sh up
+#
+# The project name is pinned to `nodus-load` by that script, so a checkout in a
+# differently named directory does not adopt this stack.
+
+name: nodus-load
+
+x-load-environment: &load-environment
+  NODUS_DOMAIN: ${NODUS_DOMAIN:-nodus.test}
+  NODUS_BASE_URL: ${NODUS_LOAD_BASE_URL:-http://127.0.0.1:18100}
+  NODUS_TITLE: Nodus Load
+  NODUS_DESCRIPTION: Measurement stack
+  NODUS_CONTACT_EMAIL: load@nodus.test
+  NODUS_DATABASE_URL: >-
+    postgres://nodus:${NODUS_DB_PASSWORD:?}@postgres:5432/nodusload
+  NODUS_DATABASE_CONNECTIONS: ${NODUS_LOAD_CONNECTIONS:-10}
+  NODUS_VALKEY_URL: >-
+    redis://:${VALKEY_PASSWORD:?}@load-valkey:6379/0
+  NODUS_AUTH_SECURE_COOKIES: "false"
+  NODUS_REGISTRATIONS_OPEN: "true"
+  NODUS_AUTHORIZED_FETCH: "false"
+  NODUS_DRIVE_SHARE_SECRET: ${NODUS_DRIVE_SHARE_SECRET:-}
+  NODUS_MEDIA_DIR: /var/lib/nodus/media
+  NODUS_MEDIA_VARIANTS_DIR: /var/lib/nodus/media/variants
+  NODUS_HOME_CAP: ${NODUS_HOME_CAP:-400}
+  NODUS_HOME_SHARDS: "1"
+  NODUS_VALKEY_CHANNEL: nodus:home
+
+x-load-service: &load-service
+  image: nodus-lab/server:0.1.0
+  restart: unless-stopped
+  entrypoint: ["/usr/bin/tini", "--"]
+  environment: *load-environment
+  volumes:
+    - load-media-data:/var/lib/nodus
+
+services:
+  nodus-api:
+    <<: *load-service
+    container_name: nodus-load-api
+    command: ["nodus-api"]
+    environment:
+      <<: *load-environment
+      NODUS_BIND: 0.0.0.0:3000
+      NODUS_NODE_NAME: load-api-1
+      NODUS_BOOTSTRAP_EMAIL: ${NODUS_BOOTSTRAP_EMAIL:-admin@nodus.test}
+      NODUS_BOOTSTRAP_USERNAME: ${NODUS_BOOTSTRAP_USERNAME:-admin}
+      NODUS_BOOTSTRAP_PASSWORD: ${NODUS_BOOTSTRAP_PASSWORD:?}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+
+  nodus-media-worker:
+    <<: *load-service
+    container_name: nodus-load-media-worker
+    command: ["nodus-media"]
+    environment:
+      <<: *load-environment
+      NODUS_BIND: 0.0.0.0:3003
+      NODUS_MEDIA_NODE: load-media-1
+      NODUS_MEDIA_ENDPOINT: ${NODUS_LOAD_BASE_URL:-http://127.0.0.1:18100}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          curl -fsS -o /dev/null
+          http://127.0.0.1:3003/media/default-avatar.png
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+
+  load-valkey:
+    image: valkey/valkey:8.1-bookworm
+    container_name: nodus-load-valkey
+    restart: unless-stopped
+    command:
+      - valkey-server
+      - --requirepass
+      - ${VALKEY_PASSWORD:?}
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+    environment:
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD:?}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          valkey-cli --no-auth-warning -a "$${VALKEY_PASSWORD}" ping
+          | grep -q PONG
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
+
+  caddy:
+    image: nodus-lab/web:0.1.0
+    container_name: nodus-load-caddy
+    restart: unless-stopped
+    user: "0:0"
+    command:
+      - caddy
+      - run
+      - --config
+      - /etc/caddy/Caddyfile.load
+      - --adapter
+      - caddyfile
+    volumes:
+      - ./Caddyfile.load:/etc/caddy/Caddyfile.load:ro
+      - load-caddy-data:/var/lib/nodus/caddy
+    ports:
+      - "127.0.0.1:18100:8080"
+    depends_on:
+      nodus-api:
+        condition: service_healthy
+      nodus-media-worker:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+volumes:
+  load-media-data:
+  load-caddy-data:
+
+networks:
+  default:
+    name: nodus-lab
+    external: true
