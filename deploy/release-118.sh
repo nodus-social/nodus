@@ -195,6 +195,53 @@ REMOTE
     done
 }
 
+# The feed and calc roles seal stored instance tokens with `TOKEN_ENC_KEY`. A host without
+# a usable key serves every `/api/v1/sync/*` call as 503 `sync_disabled` while
+# `/api/v1/meta` still advertises `sync_token`, and every health check stays green; CT 118
+# ran that way for days. Own the variable here: create it once when it is absent, never
+# overwrite an existing one, and refuse a value that is not a 32-byte base64 key. Rotating
+# it silently would orphan every token already sealed with it.
+token_key_preflight() {
+    local status
+    status=$(
+        host_run <<'REMOTE'
+pct exec "$CT" -- bash -c '
+  set -euo pipefail
+  file=/etc/nodus-backend.env
+  [ -f "$file" ] || { echo missing-env-file; exit 0; }
+  value=$(sed -n "s/^TOKEN_ENC_KEY=//p" "$file" | tail -n 1 | tr -d "[:space:]")
+  if [ -z "$value" ]; then
+    value=$(head -c 32 /dev/urandom | base64 | tr -d "\n")
+    printf "\nTOKEN_ENC_KEY=%s\n" "$value" >>"$file"
+    echo generated
+    exit 0
+  fi
+  if ! bytes=$(printf "%s" "$value" | base64 -d 2>/dev/null | wc -c); then
+    bytes=invalid
+  fi
+  echo "present:$(printf "%s" "$bytes" | tr -d " ")"
+'
+REMOTE
+    )
+    case $status in
+    generated) log "   TOKEN_ENC_KEY: absent, generated once into /etc/nodus-backend.env" ;;
+    present:32) log "   TOKEN_ENC_KEY: present, base64 of 32 bytes" ;;
+    missing-env-file)
+        log "FAIL: CT $CT has no /etc/nodus-backend.env, so TOKEN_ENC_KEY cannot be owned"
+        return 1
+        ;;
+    present:*)
+        log "FAIL: TOKEN_ENC_KEY is not a base64 32-byte key (decoded: ${status#present:});"
+        log "      refusing to overwrite it — inspect /etc/nodus-backend.env on CT $CT"
+        return 1
+        ;;
+    *)
+        log "FAIL: could not verify TOKEN_ENC_KEY on CT $CT (got '${status:-nothing}')"
+        return 1
+        ;;
+    esac
+}
+
 wait_active() {
     local role=$1 state
     for _ in $(seq 1 30); do
@@ -314,6 +361,26 @@ REMOTE
         log "FAIL: $unit logged ERROR or panicked in the last 2 minutes"
         return 1
     }
+    if [ "$role" = feed ]; then
+        # `/api/v1/meta` publishes `sync_token` on this unit's behalf; a feed without the
+        # sealing key still passes every health probe while the capability answers 503.
+        local key=ok
+        key=$(
+            host_run feed <<'REMOTE'
+pct exec "$CT" -- bash -c '
+  pid=$(pgrep -x nodus-feed | head -n 1)
+  value=$(tr "\0" "\n" < "/proc/$pid/environ" | sed -n "s/^TOKEN_ENC_KEY=//p" | head -n 1)
+  [ -n "$value" ] || { echo missing; exit 0; }
+  bytes=$(printf "%s" "$value" | base64 -d 2>/dev/null | wc -c | tr -d " ") || { echo invalid; exit 0; }
+  [ "$bytes" = 32 ] && echo ok || echo invalid
+'
+REMOTE
+        )
+        [ "$key" = ok ] || {
+            log "FAIL: nodus-feed has $key TOKEN_ENC_KEY; /api/v1/meta advertises sync_token but /api/v1/sync/* would answer 503 sync_disabled"
+            return 1
+        }
+    fi
     log "   $unit active (${port:+:$port }${code:+healthz $code})"
 }
 
@@ -556,6 +623,7 @@ main() {
     artifact_manifest_check "$ART" backend || exit 1
     glibc_preflight
     runtime_prerequisites
+    token_key_preflight || exit 1
 
     declare -gA INSTALLED_SHA=()
     trap 'deploy_failed $?' ERR

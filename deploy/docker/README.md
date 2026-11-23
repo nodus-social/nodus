@@ -64,7 +64,7 @@ binary against the shared database instead — see `deploy/distributed/README.md
 | `NODUS_ROLES` | `api,media,feed,scan,prune,calc` | Which services this container runs |
 | `NODUS_TELEMETRY` | the four worker sockets | Where the API looks for its siblings |
 | `NODUS_TELEMETRY_FULL` | unset | Set to `true` to show socket paths instead of `unix socket` |
-| `NODUS_TOKEN_ENC_KEY` | generated into `/var/lib/nodus/token-enc-key` | Plus token sealing key |
+| `TOKEN_ENC_KEY` | generated into `/var/lib/nodus/token-enc-key` | Base64 32-byte key sealing stored sync tokens (used by `feed` and `calc`; no `NODUS_` prefix). Never rotate it without a re-seal plan: it decrypts every token already stored. |
 | `RUST_LOG` | `info` | Backend log filter |
 
 ## Notes

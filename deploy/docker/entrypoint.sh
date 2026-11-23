@@ -77,10 +77,10 @@ trap cleanup EXIT INT TERM
 ROLES="${NODUS_ROLES:-api,media,feed,scan,prune,calc}"
 TOKEN_KEY_FILE="/var/lib/nodus/token-enc-key"
 
-# The calculator seals and opens sync tokens. A key generated here is a key that survives a
-# restart because it is kept beside the volume, and a deployment that already has one in its
-# environment is never overridden.
-if [[ ",${ROLES}," == *,calc,* && -z "${TOKEN_ENC_KEY:-}" ]]; then
+# The calculator seals and opens sync tokens, and the feed serves the sync surface. A key
+# generated here is a key that survives a restart because it is kept beside the volume, and
+# a deployment that already has one in its environment is never overridden.
+if [[ ",${ROLES}," == *,calc,* || ",${ROLES}," == *,feed,* ]] && [[ -z "${TOKEN_ENC_KEY:-}" ]]; then
 	if [[ -f "${TOKEN_KEY_FILE}" ]]; then
 		export TOKEN_ENC_KEY="$(cat "${TOKEN_KEY_FILE}")"
 	else
@@ -121,7 +121,7 @@ if [[ ",${ROLES}," == *,media,* || ",${ROLES}," == *,api,* ]]; then
 	spawn media nodus-media "NODUS_NODE_NAME=media NODUS_BIND=unix:${APP_RUN}/media.sock NODUS_TELEMETRY_SOCKET=unix:${APP_RUN}/media-telemetry.sock NODUS_DATABASE_URL='${NODUS_DATABASE_URL}' NODUS_MEDIA_DIR=/var/lib/nodus/media NODUS_MEDIA_VARIANTS_DIR=/var/lib/nodus/media/variants"
 fi
 if [[ ",${ROLES}," == *,feed,* ]]; then
-	spawn feed nodus-feed "NODUS_NODE_NAME=feed NODUS_BIND=unix:${APP_RUN}/feed.sock NODUS_TELEMETRY_SOCKET=unix:${APP_RUN}/feed-telemetry.sock NODUS_DATABASE_URL='${NODUS_DATABASE_URL}'"
+	spawn feed nodus-feed "NODUS_NODE_NAME=feed NODUS_BIND=unix:${APP_RUN}/feed.sock NODUS_TELEMETRY_SOCKET=unix:${APP_RUN}/feed-telemetry.sock NODUS_DATABASE_URL='${NODUS_DATABASE_URL}' TOKEN_ENC_KEY='${TOKEN_ENC_KEY}'"
 fi
 if [[ ",${ROLES}," == *,scan,* ]]; then
 	spawn scan nodus-scan "NODUS_NODE_NAME=scan NODUS_TELEMETRY_SOCKET=unix:${APP_RUN}/scan.sock NODUS_DATABASE_URL='${NODUS_DATABASE_URL}'"
