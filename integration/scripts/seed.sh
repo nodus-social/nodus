@@ -1,7 +1,8 @@
 #!/bin/bash
 # Creates the lab's demo data through the public HTTP API: the admin comes from
-# NODUS_BOOTSTRAP_*, the two ordinary accounts are registered on /auth/register,
-# and every token is obtained with the same PKCE flow the browser client uses.
+# NODUS_BOOTSTRAP_*, the ordinary accounts (reading, plus the drive's own) are
+# registered on /auth/register, and every token is obtained with the same PKCE
+# flow the browser client uses.
 # Rerunning converges the lab to the seeded graph: follows and posts that are
 # already there are reported and left alone, statuses a previous spec run left
 # behind are pruned (see prune-strays.sh), and the home timeline is repaired at
@@ -34,6 +35,11 @@ ADA_PASSWORD=lab-password-ada
 GRACE_USER=grace
 GRACE_EMAIL=grace@nodus.test
 GRACE_PASSWORD=lab-password-grace
+# The drive is per account, and drive.spec.mjs asserts on the drive's list, so
+# the account it signs in as must not be one of the shared reading accounts.
+DRIVE_USER=drive
+DRIVE_EMAIL=drive@nodus.test
+DRIVE_PASSWORD=lab-password-drive
 
 CLIENT_NAME="nodus-lab seed"
 REDIRECT_URI="http://127.0.0.1:${port}/oauth/callback"
@@ -236,14 +242,17 @@ follow() {
 printf 'seeding ordinary accounts ...\n'
 register_account "$ADA_USER" "$ADA_EMAIL" "$ADA_PASSWORD"
 register_account "$GRACE_USER" "$GRACE_EMAIL" "$GRACE_PASSWORD"
+register_account "$DRIVE_USER" "$DRIVE_EMAIL" "$DRIVE_PASSWORD"
 
 ADA_TOKEN=$(login_token "$ADA_EMAIL" "$ADA_PASSWORD" ada)
 GRACE_TOKEN=$(login_token "$GRACE_EMAIL" "$GRACE_PASSWORD" grace)
 ADMIN_TOKEN=$(login_token "$ADMIN_EMAIL" "$ADMIN_PASSWORD" admin)
+DRIVE_TOKEN=$(login_token "$DRIVE_EMAIL" "$DRIVE_PASSWORD" drive)
 
 ADA_ID=$(account_id "$ADA_TOKEN")
 GRACE_ID=$(account_id "$GRACE_TOKEN")
 ADMIN_ID=$(account_id "$ADMIN_TOKEN")
+DRIVE_ID=$(account_id "$DRIVE_TOKEN")
 
 printf 'seeding follows ...\n'
 follow "$ADA_TOKEN" "$GRACE_ID" grace
@@ -271,6 +280,7 @@ post_status "$ADMIN_TOKEN" "$ADMIN_ID" "${SEED_POSTS[4]}"
 printf 'pruning statuses a previous spec run left behind ...\n'
 "$SCRIPT_DIR/prune-strays.sh" "$BASE" \
     "$ADA_TOKEN:$ADA_ID" "$GRACE_TOKEN:$GRACE_ID" "$ADMIN_TOKEN:$ADMIN_ID" \
+    "$DRIVE_TOKEN:$DRIVE_ID" \
     -- "${SEED_POSTS[@]}"
 
 printf 'restoring the home timeline ...\n'
@@ -280,5 +290,7 @@ printf '\nseeded accounts (%s)\n' "$BASE"
 printf '  %-10s %-22s %s\n' USER EMAIL PASSWORD
 printf '  %-10s %-22s %s\n' "$ADA_USER" "$ADA_EMAIL" "$ADA_PASSWORD"
 printf '  %-10s %-22s %s\n' "$GRACE_USER" "$GRACE_EMAIL" "$GRACE_PASSWORD"
+printf '  %-10s %-22s %s\n' "$DRIVE_USER" "$DRIVE_EMAIL" "$DRIVE_PASSWORD"
 printf '  %-10s %-22s %s\n' "$ADMIN_USER" "$ADMIN_EMAIL" "$ADMIN_PASSWORD"
-printf '\n  ada %s, grace %s, admin %s\n' "$ADA_ID" "$GRACE_ID" "$ADMIN_ID"
+printf '\n  ada %s, grace %s, drive %s, admin %s\n' \
+    "$ADA_ID" "$GRACE_ID" "$DRIVE_ID" "$ADMIN_ID"

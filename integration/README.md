@@ -104,6 +104,7 @@ this is also why a `reset.sh` right after a CA change needs the peers restarted.
 | admin | `admin@nodus.test` / `nodus-lab-admin` (from `.env`) |
 | ordinary account | `ada@nodus.test` / `lab-password-ada` |
 | ordinary account | `grace@nodus.test` / `lab-password-grace` |
+| ordinary account (the drive spec's) | `drive@nodus.test` / `lab-password-drive` |
 | Postgres | `postgres:5432` inside the network only, role `nodus`, database `nodus` |
 | Valkey | `valkey:6379`, `requirepass` from `.env` |
 

@@ -1,7 +1,10 @@
 // Functional: upload a real image through the composer, publish it, find the
 // file in the drive, and prove the media blob is actually served. The drive is
-// cleared through the API before and after, so this spec owns the only file in
-// it and the drive screenshot has a deterministic list.
+// per account, and this spec asserts on the list itself, so it signs in as the
+// drive account: the reading accounts' drives are emptied and refilled by the
+// composer and drive visual specs, and a leftover file there is not this spec's
+// failure. The drive is still cleared through the API before and after, so the
+// list under test holds only the file this run uploaded.
 
 import { fileURLToPath } from 'node:url';
 
@@ -15,7 +18,7 @@ import { signIn } from '../helpers/session.mjs';
 const FIXTURE = fileURLToPath(new URL('../fixtures/status-image.png', import.meta.url));
 
 test('an uploaded image is published, listed in the drive and served', async ({ page }) => {
-  const session = await signIn(page, ACCOUNTS.ada);
+  const session = await signIn(page, ACCOUNTS.drive);
   await clearDrive(page.request, session);
 
   const text = `drive probe ${Date.now()}`;

@@ -39,6 +39,14 @@ export const ACCOUNTS = {
     email: 'admin@nodus.test',
     password: 'nodus-lab-admin',
   },
+  // The drive is a per-account list, so a spec that asserts on the list itself
+  // cannot share an account with specs that upload into the same drive. This
+  // account owns nothing but what drive.spec.mjs puts in it.
+  drive: {
+    username: 'drive',
+    email: 'drive@nodus.test',
+    password: 'lab-password-drive',
+  },
 };
 
 // Exact strings from seed.sh. The home timeline spec asserts Grace's text on

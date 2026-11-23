@@ -42,6 +42,7 @@
 import { expect, test } from '@playwright/test';
 
 import { ACCOUNTS, BASE_URL } from '../fixtures.mjs';
+import { clearNotifications } from '../helpers/api.mjs';
 import { navigate } from '../helpers/navigation.mjs';
 import { signIn } from '../helpers/session.mjs';
 import { prepareVisualPage, volatileMasks } from '../helpers/visual.mjs';
@@ -60,6 +61,17 @@ const MASTODON_SHAPED = {
 };
 
 const RAIL = 'aside[data-rail="left"]';
+
+// The unread badge belongs to the account, not to the page: other specs write
+// into the administrator's inbox, and that is the state `railPicture` would be
+// pinning. The mask covers the count, not its box — a mask is painted only while
+// the badge exists and its width follows the number of digits — so an inbox left
+// unread by an earlier spec changes the picture even though the count is
+// masked. Empty the inbox through the API first, so the bell row (the door the
+// picture does claim) is drawn with no badge whatever ran before this test.
+async function emptyInbox(page, session) {
+  await clearNotifications(page.request, session);
+}
 
 // The rail is desktop-only: below the `xl` breakpoint the shell has no left
 // column, so a screenshot there would be a picture of the viewport, not of the
@@ -224,6 +236,7 @@ test('a full Nodus instance draws both staff doors', async ({
   desktopOnly(testInfo);
   const session = await signIn(page, ACCOUNTS.admin);
   expect(session.acct, 'the administrator is signed in').toBe('admin');
+  await emptyInbox(page, session);
 
   await grantAdmin(page);
   await expect(
@@ -243,6 +256,7 @@ test('an instance that omits admin, moderation and drive draws neither the doors
   desktopOnly(testInfo);
   const session = await signIn(page, ACCOUNTS.admin);
   expect(session.acct, 'the administrator is signed in').toBe('admin');
+  await emptyInbox(page, session);
 
   // The grant is obtained against the real answer first: with `admin` absent
   // from the capability list the gate has no grant button to offer, and a
@@ -320,6 +334,7 @@ test('a Mastodon-shaped session keeps lists, bookmarks and search, and draws no 
   expect(session.acct, 'the reader this test speaks for is signed in').toBe(
     'admin',
   );
+  await emptyInbox(page, session);
   await grantAdmin(page);
 
   await page.route('**/api/v1/meta', (route) =>
