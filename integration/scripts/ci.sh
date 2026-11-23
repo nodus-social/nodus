@@ -15,6 +15,7 @@
 #   integration/scripts/ci.sh all                # up, run every job, down (on exit)
 #   integration/scripts/ci.sh preflight          # shorthand for `run --job preflight`
 #   integration/scripts/ci.sh rust-tests|lab|gate
+#   integration/scripts/ci.sh check-pins         # deploy/check-pins.sh, no act, no docker
 #
 # Requirements: docker (the host daemon), curl, tar, and network access the
 # first time (to fetch act and the runner image). `ci.sh` installs act into
@@ -79,7 +80,7 @@ LAB_HTTP_PORT=$(workflow_port LAB_HTTP_PORT)
 LAB_HTTPS_PORT=$(workflow_port LAB_HTTPS_PORT)
 
 usage() {
-    sed -n '2,36p' "$SCRIPT_DIR/ci.sh" | sed 's/^# \{0,1\}//'
+    sed -n '2,37p' "$SCRIPT_DIR/ci.sh" | sed 's/^# \{0,1\}//'
 }
 
 die() {
@@ -396,6 +397,12 @@ all)
 preflight | rust-tests | lab | gate)
     trap finish EXIT
     run_act --job "$command" "${@:2}"
+    ;;
+check-pins)
+    # A mode, not a workflow job: this is the local composition gate, and it needs the
+    # host's rust toolchain rather than an act container. build.sh runs it too.
+    shift
+    exec "$REPO_DIR/deploy/check-pins.sh" "$@"
     ;;
 -h | --help | help) usage ;;
 *)

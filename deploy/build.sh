@@ -29,6 +29,9 @@ ROOT=$(
 SUBMODULES="nodus-backend recommender sdk server-sdk web"
 ROLES="calc scan prune feed media api"
 
+# shellcheck source=pins.sh
+. "$ROOT/deploy/pins.sh"
+
 # The builder image is derived from the same pins integration/Dockerfile.web uses. Trunk
 # must stay on a release bookworm's glibc starts without warnings (0.22.1 prints
 # `GLIBC_2.39 not found` at startup); wasm-opt is matched to wasm-bindgen's externref
@@ -126,6 +129,19 @@ for tool in docker git tar sha256sum objdump find sort touch; do
     command -v "$tool" >/dev/null 2>&1 || die "$tool is required on the host"
 done
 
+# Run the composition gate before BUILD-INFO or any artifact is written. A recorded
+# gitlink matching its submodule says nothing about whether the pins compile together;
+# deploy/check-pins.sh answers that in seconds and names the workspace that broke.
+set +e
+"$ROOT/deploy/check-pins.sh"
+CHECK_PINS_STATUS=$?
+set -e
+case $CHECK_PINS_STATUS in
+0) ;;
+1) die "the pinned submodules do not compose; deploy/check-pins.sh named the workspace" ;;
+*) log "check-pins: no check could run (see the SKIP lines above); continuing" ;;
+esac
+
 # --- identity --------------------------------------------------------------------------
 
 SUPERPROJECT=$(git -C "$ROOT" rev-parse HEAD)
@@ -179,10 +195,9 @@ else
     log "resolving pinned commits from $ROOT (git ls-tree HEAD) ..."
     CTX=$(mktemp -d "${TMPDIR:-/tmp}/nodus-build.XXXXXX")
     for sub in $SUBMODULES; do
-        pin=$(git -C "$ROOT" ls-tree HEAD -- "$sub" | awk '{print $3}')
+        pin=$(pin_of "$ROOT" "$sub")
         [ -n "$pin" ] || die "no gitlink for $sub in $ROOT HEAD"
-        mkdir -p "$CTX/$sub"
-        git -C "$ROOT/$sub" archive --format=tar "$pin" | tar -x -C "$CTX/$sub" ||
+        archive_pin "$ROOT" "$sub" "$pin" "$CTX/$sub" ||
             die "cannot archive $sub at $pin; run git submodule update --init"
         PIN[$sub]=$pin
     done

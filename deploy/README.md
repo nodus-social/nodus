@@ -11,26 +11,31 @@ restored with `--rollback <stamp>`.
 a non-empty one is only reused when `build.sh` wrote it (it must contain `BUILD-INFO`).
 
 ```sh
-# 0. artifacts, from the submodule commits the superproject records (git ls-tree HEAD)
+# 0. prove the pins compose: each workspace that consumes the SDK is `cargo check`ed
+#    against git ls-tree HEAD + git archive. `build.sh` runs this first too; this is the
+#    standalone, seconds-long answer.
+deploy/check-pins.sh
+
+# 1. artifacts, from the submodule commits the superproject records (git ls-tree HEAD)
 #    --worktree builds the working trees instead; either way the commits are printed.
 deploy/build.sh all ~/.cache/nodus-artifacts/2026-11-23
 
 OUT=~/.cache/nodus-artifacts/2026-11-23
 STAMP=2026-11-23
 
-# 1. backend: six binaries to CT 118, health-checked role by role
+# 2. backend: six binaries to CT 118, health-checked role by role
 deploy/release-118.sh "$OUT" "$STAMP"
 
-# 2. web: binary + dist to CT 100, Caddy config validated and reloaded
+# 3. web: binary + dist to CT 100, Caddy config validated and reloaded
 deploy/release-100.sh "$OUT/nodus-web-server" "$OUT/dist" "$STAMP"
 
-# 3. verify the live services
+# 4. verify the live services
 ssh root@hyper.luxuride.eu 'pct exec 118 -- curl -fsS http://127.0.0.1:3001/api/v1/meta | jq ".features|length"'
 curl -fsS -o /dev/null -w '%{http_code}\n' https://nodus.luxuride.eu/healthz
 curl -fsS -o /dev/null -D - -H 'Accept-Encoding: zstd' \
   https://nodus.luxuride.eu/nodus-web-*.js | grep -i '^content-encoding: zstd'
 
-# 4. rollback, if a release must be undone: same stamp, previous set goes back
+# 5. rollback, if a release must be undone: same stamp, previous set goes back
 deploy/release-118.sh --rollback "$STAMP"
 deploy/release-100.sh --rollback "$STAMP"
 ```
@@ -42,6 +47,15 @@ and the release proceeds.
 
 ## Build notes
 
+- `deploy/check-pins.sh` is the composition gate. Every recorded gitlink can match its
+  submodule and the set still fail to compile together — an SDK error variant leaves an
+  exhaustive `match` downstream non-exhaustive (`E0004`) — so `build.sh` runs the gate
+  before writing `BUILD-INFO` or an artifact. It checks `sdk`, `recommender`,
+  `nodus-backend` and `web` with `cargo check --workspace` (plus `nodus-web-client` for
+  `wasm32-unknown-unknown`); tests and examples are outside it. The pinned context and
+  target directory persist under `~/.cache/nodus-check-pins`, never `/tmp`, so a warm run
+  is seconds. **A matching pin is not the same as a composing pin.** (Unrelated:
+  `integration/scripts/check-pins.sh` compares running images' `nodus.pins` labels.)
 - Everything is built in `rust:1-bookworm` (glibc 2.36) because CT 118 and CT 100 run
   Debian 12. `build.sh` also reads each binary's highest `GLIBC_2.x` symbol and refuses a
   build that would need a newer one, so the release scripts' glibc gate is a second fence,
