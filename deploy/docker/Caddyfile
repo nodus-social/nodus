@@ -100,8 +100,12 @@
 		root * /srv/nodus
 		header Cache-Control "public, max-age=31536000, immutable"
 		# `precompressed` only sets this on the responses it encodes; without it an
-		# identity response is cacheable as if it were the only variant.
-		header Vary Accept-Encoding
+		# identity response is cacheable as if it were the only variant. Deferred so it
+		# replaces the encoded response's own copy instead of adding a second line.
+		header {
+			Vary Accept-Encoding
+			defer
+		}
 		# The bundle ships `.zst`/`.gz` siblings next to every hashed asset. The encoder
 		# above skips `application/wasm`, so without this the wasm is 6.2 MB on every
 		# first visit. `precompressed` falls back to the identity file when a sibling is
