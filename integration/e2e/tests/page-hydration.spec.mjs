@@ -14,11 +14,10 @@
 //     /api/v1/statuses/{id}, no /api/v1/statuses/{id}/context, no /api/v1/accounts/{id}.
 //     The document request is a navigation, not an XHR, and is asserted separately so a
 //     failed load cannot be mistaken for a clean zero. The one exception is the page
-//     chrome named in PAGE_CHROME_READS, which the document paints for itself: the page
-//     fans out today, so a load reads it three or four times (four, three and four across
-//     three consecutive loads), all 404 on a fixture that publishes no banners. The ceiling
-//     is named, not derived, so a fifth read fails here and a fix down to one read must
-//     lower it. A new sub-resource has to be named there first;
+//     chrome named in PAGE_CHROME_READS, which the document paints for itself: a load
+//     reads it exactly once, all 404 on a fixture that publishes no banners. The count is
+//     named, not derived, so a second read fails here. A new sub-resource has to be named
+//     there first;
 //  2. the island carries what the client trusts: `kind`, the thread's status id and its
 //     context arrays, the profile's account id, statuses and relationship;
 //  3. a second visit to the same thread is still zero subject reads per load, so a
@@ -166,23 +165,24 @@ const PAGE_CHROME_READS = [
   {
     suffix: '/style_public',
     what: "the viewed account's published banners",
-    // A ceiling, and a wrong one: the page should read this document once, and today it
-    // reads it three or four times per load — the same URL, fetched concurrently in the same
-    // millisecond, so the page is duplicating its own work. Four is what three consecutive
-    // loads measured (4, 3, 4), so the fan-out races; `ProfilePage` already guards one read
-    // per account (web/crates/pages/src/pages/accounts/[id]/mod.rs, the `requested` stored
-    // value) and `profile_banners::read` issues one fetch per call, so the copies come from
-    // above them. A fifth read fails this spec, and fixing the fan-out must lower the number.
-    maxPerLoad: 4,
+    // Exactly one, and this number was wrong: a load used to read this document three or
+    // four times (4, 3 and 4 across three consecutive loads), the same URL fetched
+    // concurrently for every render of the profile. The cause was the reader, not three
+    // mounts: `Runtime::profile_banners` minted a fresh `Callback` per render, so
+    // `ProfilePage`'s one-read-per-account guard (web/crates/pages/src/pages/accounts/[id]/
+    // mod.rs, the `requested` stored value) started empty each time. web 0.1.0 makes the
+    // reader app-lifetime (`profile_banners::install`) and adds in-flight dedupe per URL, so
+    // one load reads it once; a second read fails here.
+    perLoad: 1,
   },
 ];
 
 /// The named page-chrome reads in `requests`, one group per suffix so the count of each
 /// can be asserted on its own.
 const pageChromeReads = (requests, id) =>
-  PAGE_CHROME_READS.map(({ suffix, what, maxPerLoad }) => ({
+  PAGE_CHROME_READS.map(({ suffix, what, perLoad }) => ({
     what,
-    maxPerLoad,
+    perLoad,
     reads: requests.filter(({ url }) => pathOf(url) === `/api/v1/accounts/${id}${suffix}`),
   }));
 
@@ -214,14 +214,12 @@ test('a signed-in entity load makes no subject read from the browser', async ({ 
   expect(pageReads(profile), 'the browser never reads the page API; SSR already did').toEqual([]);
   const profileReads = subjectReads(profile, accountId);
   const chrome = pageChromeReads(profileReads, accountId);
-  for (const { what, maxPerLoad, reads } of chrome) {
-    // Bounded at both ends, not "any number": the page paints the banners itself, so at
-    // least one read happens, and `maxPerLoad` is the most the fan-out above produces today.
-    expect(reads.length, `the browser reads ${what} at least once per load`).toBeGreaterThan(0);
-    expect(
-      reads.length,
-      `the browser reads ${what} at most ${maxPerLoad} times per load`,
-    ).toBeLessThanOrEqual(maxPerLoad);
+  for (const { what, perLoad, reads } of chrome) {
+    // Not "any number": the page paints the banners itself, so the document is read, and the
+    // reader's one-read-per-account guard holds it to exactly one read per load.
+    expect(reads.length, `the browser reads ${what} exactly ${perLoad} time(s) per load`).toBe(
+      perLoad,
+    );
   }
   const chromeReads = new Set(chrome.flatMap(({ reads }) => reads));
   expect(
