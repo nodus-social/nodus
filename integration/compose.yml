@@ -36,6 +36,16 @@ x-nodus-environment: &nodus-environment
   NODUS_REGISTRATIONS_OPEN: ${NODUS_REGISTRATIONS_OPEN:-true}
   NODUS_AUTHORIZED_FETCH: ${NODUS_AUTHORIZED_FETCH:-false}
   NODUS_ACCOUNT_DELETE_GRACE_DAYS: ${NODUS_ACCOUNT_DELETE_GRACE_DAYS:-30}
+  # Web Push needs a P-256 pair or the four subscription verbs answer 501 and
+  # no browser can subscribe. These are LAB-ONLY keys: they are committed so a
+  # fresh checkout can exercise push without a setup step, they are worthless
+  # outside the lab (a real deployment must generate its own), and the public
+  # half is what /api/v1/apps and /api/v1/push/subscription publish.
+  NODUS_VAPID_PRIVATE_KEY: >-
+    ${NODUS_VAPID_PRIVATE_KEY:-Gwf705zrqtxlBtjpVJFAidQwi3PLvQbP5csVLuAZ5IY}
+  NODUS_VAPID_PUBLIC_KEY: >-
+    ${NODUS_VAPID_PUBLIC_KEY:-BJTYVPjHzDziJ2DOO2AzghfD4Bmn_fgA9h_aKTuhr3ynEXKwbvq7vp7lrCbWTUlT1okxXp17yfS_FkNqaR57Jx8}
+  NODUS_VAPID_SUBJECT: ${NODUS_VAPID_SUBJECT:-mailto:lab@nodus.test}
   # Bootstrap is deliberately not in this shared block: every role would race to
   # create the same admin on a fresh volume. Only nodus-api gets these three.
   NODUS_DRIVE_SHARE_SECRET: ${NODUS_DRIVE_SHARE_SECRET:-}
