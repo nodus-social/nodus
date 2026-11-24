@@ -86,11 +86,21 @@ export async function prepareVisualPage(page, scope) {
 /// mask would hide whether the door exists. `notificationDoor: 'badge'` masks
 /// only the count, so the bell row is part of the picture while the count stays
 /// volatile.
-export function volatileMasks(page, { notificationDoor = 'link' } = {}) {
+///
+/// `ages: false` is for a spec that already hides the ages in CSS
+/// (home-visual.spec.mjs). A mask over a hidden node adds nothing to the
+/// picture, and a mask that lands below the viewport fold is painted in a pane
+/// sized to the visible part of the capture, so it can shift by the scroll
+/// offset or vanish — a difference that has nothing to do with the page.
+export function volatileMasks(page, { notificationDoor = 'link', ages = true } = {}) {
   return [
-    page.locator('time'),
-    page.locator('[datetime]'),
-    page.locator('header a[href*="/status/"]'),
+    ...(ages
+      ? [
+          page.locator('time'),
+          page.locator('[datetime]'),
+          page.locator('header a[href*="/status/"]'),
+        ]
+      : []),
     notificationDoor === 'badge'
       ? page.locator('[data-notice-count]')
       : page.locator('a[href="/notifications"]'),

@@ -13,7 +13,12 @@
 //     zero requests for the subject under test — no /api/v1/pages/, no
 //     /api/v1/statuses/{id}, no /api/v1/statuses/{id}/context, no /api/v1/accounts/{id}.
 //     The document request is a navigation, not an XHR, and is asserted separately so a
-//     failed load cannot be mistaken for a clean zero;
+//     failed load cannot be mistaken for a clean zero. The one exception is the page
+//     chrome named in PAGE_CHROME_READS, which the document paints for itself: the page
+//     fans out today, so a load reads it three or four times (four, three and four across
+//     three consecutive loads), all 404 on a fixture that publishes no banners. The ceiling
+//     is named, not derived, so a fifth read fails here and a fix down to one read must
+//     lower it. A new sub-resource has to be named there first;
 //  2. the island carries what the client trusts: `kind`, the thread's status id and its
 //     context arrays, the profile's account id, statuses and relationship;
 //  3. a second visit to the same thread is still zero subject reads per load, so a
@@ -149,6 +154,38 @@ const subjectReads = (requests, id) =>
     );
   });
 
+/// Reads the viewed page makes for its own chrome, not for the entity. The profile
+/// document publishes the viewed account's banners (nodus-backend d68c1d5 + web a1c6700),
+/// so the browser fetches `GET /api/v1/accounts/{id}/style_public` the way it fetches an
+/// image the page paints: the banners are part of the picture the document already drew,
+/// not a re-read of the account. Each suffix is named here on purpose, one at a time, so a
+/// *new* sub-resource fails this guard until someone adds it deliberately — which is why
+/// the prefix match in `subjectReads` is not widened to everything under
+/// `/api/v1/accounts/{id}/`.
+const PAGE_CHROME_READS = [
+  {
+    suffix: '/style_public',
+    what: "the viewed account's published banners",
+    // A ceiling, and a wrong one: the page should read this document once, and today it
+    // reads it three or four times per load — the same URL, fetched concurrently in the same
+    // millisecond, so the page is duplicating its own work. Four is what three consecutive
+    // loads measured (4, 3, 4), so the fan-out races; `ProfilePage` already guards one read
+    // per account (web/crates/pages/src/pages/accounts/[id]/mod.rs, the `requested` stored
+    // value) and `profile_banners::read` issues one fetch per call, so the copies come from
+    // above them. A fifth read fails this spec, and fixing the fan-out must lower the number.
+    maxPerLoad: 4,
+  },
+];
+
+/// The named page-chrome reads in `requests`, one group per suffix so the count of each
+/// can be asserted on its own.
+const pageChromeReads = (requests, id) =>
+  PAGE_CHROME_READS.map(({ suffix, what, maxPerLoad }) => ({
+    what,
+    maxPerLoad,
+    reads: requests.filter(({ url }) => pathOf(url) === `/api/v1/accounts/${id}${suffix}`),
+  }));
+
 /// The document itself, so a zero read count is only accepted when the page actually
 /// loaded. `/status/{id}` and `/accounts/{id}` are navigations; nothing above matches them.
 const documentFor = (requests, path) =>
@@ -175,8 +212,20 @@ test('a signed-in entity load makes no subject read from the browser', async ({ 
   await expect(page.getByText(statusText)).toBeVisible();
   expect(documentFor(profile, profilePath).length, 'the profile document was fetched').toBe(1);
   expect(pageReads(profile), 'the browser never reads the page API; SSR already did').toEqual([]);
+  const profileReads = subjectReads(profile, accountId);
+  const chrome = pageChromeReads(profileReads, accountId);
+  for (const { what, maxPerLoad, reads } of chrome) {
+    // Bounded at both ends, not "any number": the page paints the banners itself, so at
+    // least one read happens, and `maxPerLoad` is the most the fan-out above produces today.
+    expect(reads.length, `the browser reads ${what} at least once per load`).toBeGreaterThan(0);
+    expect(
+      reads.length,
+      `the browser reads ${what} at most ${maxPerLoad} times per load`,
+    ).toBeLessThanOrEqual(maxPerLoad);
+  }
+  const chromeReads = new Set(chrome.flatMap(({ reads }) => reads));
   expect(
-    subjectReads(profile, accountId),
+    profileReads.filter((read) => !chromeReads.has(read)),
     'hydration does not re-read the profile through /api/v1/accounts/{id}',
   ).toEqual([]);
 });

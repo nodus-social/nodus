@@ -61,6 +61,10 @@ test('home timeline', async ({ page }) => {
   });
 
   await expect(list).toHaveScreenshot('home-timeline-seeded.png', {
-    mask: volatileMasks(page),
+    // The ages are hidden above, so they need no mask: masking them only adds Playwright's
+    // mask pane, which this list makes visible — it is 922 px tall in the 900 px desktop
+    // viewport, so the capture scrolls first, the pane covers only the visible part, and the
+    // masks for the last two cards fall outside it while the rest land a scroll-offset off.
+    mask: volatileMasks(page, { ages: false }),
   });
 });
