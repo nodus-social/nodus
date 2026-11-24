@@ -277,6 +277,12 @@ services:
       NODUS_SESSIONS: /var/lib/nodus/sessions.json
       NODUS_INSTANCE_HOST: ${NODUS_DOMAIN:-nodus.test}
       NODUS_ALLOW_PRIVATE_HOSTS: mastodon.test,misskey.test,mastodon,misskey
+      # Turns on the hydration paint for the screens that render from the shared
+      # shell tree (`/home`, `/lists`). Off by default: every other screen still
+      # paints by hand and swaps, and the marker follows the BODY, so an unmarked
+      # page keeps the behaviour it had. `NODUS_TRY_HYDRATE=1 integration/scripts/up.sh`
+      # is how a lab run proves it.
+      NODUS_TRY_HYDRATE: ${NODUS_TRY_HYDRATE:-0}
       SSL_CERT_FILE: /tmp/nodus-lab-ca-bundle.crt
     volumes:
       - nodus-data:/var/lib/nodus
