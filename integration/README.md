@@ -316,6 +316,39 @@ committed; they are container-rendered, see above. `scripts/e2e.sh
 `fixtures.mjs` holds the seeded account constants and post texts. Reuse both in
 new specs.
 
+### Looking at a page by hand
+
+`e2e/ad-hoc.mjs` is a browser you can ask a question with, rather than a suite
+that answers "does this still work". It handles the four things that otherwise
+cost an hour each to rediscover:
+
+```sh
+node e2e/ad-hoc.mjs --path /home                       # signed in as admin
+node e2e/ad-hoc.mjs --path /accounts/<id> --shot /tmp/x.png
+node e2e/ad-hoc.mjs --path /home --then /admin/overview # CLIENT-SIDE move
+node e2e/ad-hoc.mjs --path /home --anon --as grace      # signed out / as grace
+node e2e/ad-hoc.mjs --path /home --click "Add a left side banner"
+```
+
+It prints the address, whether the client is live (`window.__nodus`), whether the
+document claimed `data-hydrate`/`data-shell`, the headings, the tabs, the buttons,
+any request that left this instance, and any console error. Then, optionally, a
+full-page screenshot.
+
+1. The browser browses `https://nodus.test` through a launch-arg resolver. The
+   host's port 443 belongs to something else, so the lab publishes Caddy's 443 on
+   `NODUS_HTTPS_PORT` (18443) and the rule maps the name there.
+2. **After signing in, `page.goto()` breaks the session** — the client re-reads the
+   host without a scheme and assumes https. A signed-in navigation is a
+   document-level click on an anchor, which is what `--then` does
+   (`helpers/navigation.mjs`). A probe that `goto`s after signing in and then sees
+   a sign-in page has not found a session bug.
+3. `web/e2e` serves `web/dist`: run `trunk build --release` before believing a
+   spec about the bundle.
+4. A screenshot path under `/tmp` is the CONTAINER's `/tmp` when a spec runs in the
+   pinned image — write under `/work` from a spec, or anywhere from this script,
+   which runs on the host.
+
 ## Configuration
 
 `integration/.env` is generated from `.env.example` on the first `up.sh`,
