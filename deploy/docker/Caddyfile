@@ -96,6 +96,15 @@
 		}
 	}
 
+	# The service worker is a route on the shell, not a file in the bundle: `@assets`
+	# below matches `sw.js` and would answer 404 from the file server, so push could
+	# never register. `no-cache` on purpose: a cached worker keeps an old push handler
+	# alive after an upgrade.
+	handle /sw.js {
+		reverse_proxy 127.0.0.1:8080
+		header Cache-Control "no-cache"
+	}
+
 	# deploy/ct100/nodus.caddy is the authoritative copy of this handler: it is what
 	# the CT 100 deployment loads. Keep `precompressed zstd gzip` and `Vary
 	# Accept-Encoding` here in step with it, or the AIO image serves the wasm identity

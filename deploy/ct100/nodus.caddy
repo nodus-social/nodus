@@ -172,6 +172,15 @@ nodus.luxuride.eu {
 	}
 
 
+	# The service worker is a route on the shell, not a file in the bundle: `@assets`
+	# below matches `sw.js` (and would answer 404 from the file server), so push could
+	# never register. `no-cache` on purpose: a cached worker keeps an old push handler
+	# alive after an upgrade, and this file changes with the app, not with a hash.
+	handle /sw.js {
+		reverse_proxy 127.0.0.1:8080
+		header Cache-Control "no-cache"
+	}
+
 	# Every page route is server-rendered: the first paint is the application's chrome,
 	# and "/" and "/home" carry the reader's timeline too (docs/06-ssr.md). Only files with
 	# an extension stay on disk, because those are the bundle's hashed assets.
