@@ -11,6 +11,15 @@
 #   - its own Caddy on 127.0.0.1:18100, so the lab's 8080/18443 route table is
 #     untouched.
 #
+# Every service is named `load-*` on purpose. A compose service name is also a
+# DNS alias on the network it joins, and this stack shares `nodus-lab` with the
+# lab: naming one `nodus-api` publishes a second answer for a name the lab's own
+# Caddy reverse-proxies to (Caddyfile, `reverse_proxy nodus-api:3000`), and the
+# two answers are a different *database*. Caddy then round-robins lab traffic
+# across both — a login would verify against `nodusload` and fail as often as it
+# succeeded, with no error anywhere. The load image's own Caddy addresses the
+# containers by name (`nodus-load-api`), so the service keys are free to differ.
+#
 #   integration/scripts/load.sh up
 #
 # The project name is pinned to `nodus-load` by that script, so a checkout in a
@@ -48,7 +57,7 @@ x-load-service: &load-service
     - load-media-data:/var/lib/nodus
 
 services:
-  nodus-api:
+  load-api:
     <<: *load-service
     container_name: nodus-load-api
     command: ["nodus-api"]
@@ -66,7 +75,7 @@ services:
       retries: 30
       start_period: 30s
 
-  nodus-media-worker:
+  load-media-worker:
     <<: *load-service
     container_name: nodus-load-media-worker
     command: ["nodus-media"]
@@ -111,7 +120,7 @@ services:
       retries: 20
       start_period: 3s
 
-  caddy:
+  load-caddy:
     image: nodus-lab/web:0.1.0
     container_name: nodus-load-caddy
     restart: unless-stopped
@@ -129,9 +138,9 @@ services:
     ports:
       - "127.0.0.1:18100:8080"
     depends_on:
-      nodus-api:
+      load-api:
         condition: service_healthy
-      nodus-media-worker:
+      load-media-worker:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/healthz"]
