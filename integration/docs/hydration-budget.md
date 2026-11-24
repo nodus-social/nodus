@@ -179,3 +179,39 @@ selective, so this would be a new rendering architecture whose payoff (a fractio
 **Free next step, untested here:** build the public image without the default `admin`
 feature (`web/docs/05-quality.md` records −81 KB gz). Re-run this harness to confirm the
 byte and time saving before shipping it.
+
+## The switch, and what has to be true before it flips
+
+`NODUS_TRY_HYDRATE=1` turns on the paint that the browser can adopt: `/home` and
+`/lists` are rendered from the shared shell tree, the document carries
+`data-hydrate data-shell`, and `hydrate_from` binds signals to the nodes the server
+printed instead of building a second tree and swapping it in. Off (the default) is
+the behaviour `main` has always had.
+
+The marker follows the BODY, not the switch: a page still painted by hand never
+claims `#app`'s children are a Leptos tree, because the client would walk markup no
+tree rendered and fail to adopt a page that works today.
+
+Measured on the lab with the switch ON, the lab suite went from
+`118 passed / 41 skipped / 0 failed` to `113 passed / 5 failed`, and all five
+failures are the same gap:
+
+| spec | what it wants |
+|---|---|
+| `integration/e2e/tests/capabilities.spec.mjs:68` | a nodus server that advertises admin gives its administrator the door |
+| `integration/e2e/tests/admin-pages.spec.mjs:96` | an answer that keeps admin but omits one admin page keeps the area and explains that page |
+| `integration/e2e/tests/capabilities-visual.spec.mjs:252` | an instance that omits admin, moderation and drive draws neither the doors nor their sections |
+| `integration/e2e/tests/capabilities-visual.spec.mjs:325` | a Mastodon-shaped session keeps lists, bookmarks and search, and draws no drive or feed |
+| `integration/e2e/tests/staff-eligibility.spec.mjs:94` | a refused role read closes the doors and the page stays closed |
+
+The reason is in the paint, not the switch: the shell tree is given the capability
+answer but not the staff answer, and it does not seed the notices or the editor
+state, so a staff reader loses the Administration and Moderation doors the moment
+`/home` is adopted. Those five specs are therefore the flip gate — the switch is not
+"on by default" until they pass with it on.
+
+Two smaller gaps are known and worth closing in the same pass: the first frame of
+the composer is the shared composition now (not a preview that swaps a task turn
+later), but the sidebar's cards and the rail's notices come from the client after
+hydration, so a reader on a slow link sees an empty shelf for a moment — the same
+thing the client was already doing, now visible one step earlier.
