@@ -204,11 +204,34 @@ failures are the same gap:
 | `integration/e2e/tests/capabilities-visual.spec.mjs:325` | a Mastodon-shaped session keeps lists, bookmarks and search, and draws no drive or feed |
 | `integration/e2e/tests/staff-eligibility.spec.mjs:94` | a refused role read closes the doors and the page stays closed |
 
-The reason is in the paint, not the switch: the shell tree is given the capability
-answer but not the staff answer, and it does not seed the notices or the editor
-state, so a staff reader loses the Administration and Moderation doors the moment
-`/home` is adopted. Those five specs are therefore the flip gate — the switch is not
-"on by default" until they pass with it on.
+The reason is in the paint, not the switch: the shell tree was given the capability
+answer but not the staff answer, and it did not seed the notices or the editor
+state, so a staff reader lost the Administration and Moderation doors the moment
+`/home` was adopted. `web 184fe23` fixed that half: both paints now take the staff
+and notice answers from ONE server function (`shell_answers`), `/home` and `/lists`
+cannot drift from each other, and the client hands the seeded values to the live
+answer after hydration, so a refused role read still closes the doors.
+
+With that in, the same run went from five failures to three, and the two that
+started passing are the door specs. What is left is one real defect and two
+baselines:
+
+- `integration/e2e/tests/staff-eligibility.spec.mjs:94` — navig in the adopted
+  shell. Probed directly: with the switch on, sign in, land on `/home`, then
+  navigate client-side to `/admin/overview`; the address changes, `role=tablist`
+  exists, and the page still paints the home screen (headings `NEW POST` and
+  `Home`, the home rail). `ShellRoot` adopts one screen and never re-dispatches on
+  navigation, so every in-page route change lands on the wrong screen. This is the
+  next piece of work, not a test to relax.
+- `integration/e2e/tests/capabilities-visual.spec.mjs:252` and `:325` — picture
+  baselines recorded with the switch OFF. They are not a legitimate gate for the ON
+  mode until ON-mode baselines exist, which is worth doing in the same pass as the
+  re-dispatch fix rather than before it.
+
+Also found by running: `page.goto()` after sign-in breaks the stored session by
+design (the client re-reads the host without a scheme and assumes https), so every
+signed-in navigation in a probe must use `integration/e2e/helpers/navigation.mjs`'s
+`navigate()` — a `goto` failure "looks like" a lost session and is not.
 
 Two smaller gaps are known and worth closing in the same pass: the first frame of
 the composer is the shared composition now (not a preview that swaps a task turn
