@@ -6,6 +6,7 @@
 // failure. The drive is still cleared through the API before and after, so the
 // list under test holds only the file this run uploaded.
 
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { expect, test } from '@playwright/test';
@@ -26,9 +27,22 @@ test('an uploaded image is published, listed in the drive and served', async ({ 
   await composer.locator('.ProseMirror').click();
   await page.keyboard.type(text);
 
+  // Clearing the drive removes this account's listings, not the bytes behind
+  // them: an upload whose bytes the account already holds is answered with the
+  // attachment it stored before, and an attachment belongs to the status that
+  // published it, so the second status is refused (POST /api/v1/statuses
+  // answers 422 "media attachment is not available"). A nonce past the end of
+  // the PNG keeps each run's bytes unique, which makes the spec repeatable;
+  // decoders stop at IEND, so the image itself is unchanged.
+  const upload = {
+    name: 'status-image.png',
+    mimeType: 'image/png',
+    buffer: Buffer.concat([readFileSync(FIXTURE), Buffer.from(`\ndrive-nonce-${text}`)]),
+  };
+
   const chooser = page.waitForEvent('filechooser');
   await composer.getByRole('button', { name: 'Add images, video or audio' }).click();
-  await (await chooser).setFiles(FIXTURE);
+  await (await chooser).setFiles(upload);
 
   // The composer renders the decoded preview, not a filename chip.
   const preview = composer.locator('img').first();
