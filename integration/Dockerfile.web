@@ -96,7 +96,11 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,id=nodus-cargo-registry 
     --mount=type=cache,target=/usr/local/cargo/git,id=nodus-cargo-git \
     --mount=type=cache,target=/src/web/target,id=nodus-web-wasm-target \
     node js/build.mjs && node js/css.mjs \
- && CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=${WASM_DEBUG_ASSERTIONS} trunk build --release \
+ && case "${WASM_DEBUG_ASSERTIONS}" in \
+      1|true|TRUE|yes) DEBUG_ASSERTIONS=true ;; \
+      *) DEBUG_ASSERTIONS=false ;; \
+    esac \
+ && CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=${DEBUG_ASSERTIONS} trunk build --release \
  && sh /src/deploy/precompress-bundle.sh /src/web/dist
 
 FROM debian:bookworm-slim AS runtime
