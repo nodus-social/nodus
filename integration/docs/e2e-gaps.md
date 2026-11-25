@@ -14,6 +14,26 @@ at `127.0.0.1:<port>`. Both are refused by the API on purpose
 guard — was wrong. Closed without a product change: the canonical origin is now
 `nodus.test` and the suite signs in there, so `X-Instance-Host` is a host name.
 
+## Open by record: web push delivery stops at the browser, not at a push service
+
+Delivered end to end except the last hop. `tests/push-worker.spec.mjs` runs the
+real `crates/web-server/assets/sw.js` in Chromium and delivers a real `push`
+event to it through CDP `ServiceWorker.deliverPushMessage`, so the worker, its
+tag/renotify/silent rules and its click handling are exercised by a browser. What
+is NOT exercised is a real push service: the lab has no FCM/Mozilla endpoint and
+no Android/iOS device, and `crates/api/tests/push.rs` proves the wire protocol by
+opening the encrypted envelope in a receiver the test owns (`aes128gcm`, HKDF from
+`auth` + ECDH, `Authorization: vapid t=<jwt>,k=<key>`, `aud` equal to the
+endpoint's origin).
+
+So the honest statement is: the envelope is correct against a receiver that
+decrypts it, and the worker behaves correctly against a browser event; nobody has
+watched a phone receive a notification because this instance pushes to a
+subscription row, not to a device we own. Closing this needs either a real
+credential for a push service and a subscription minted by a real browser profile,
+or a packaged lab fixture that terminates the endpoint — and the second is not a
+test of the internet.
+
 ## Closed: the federated timeline serves local posts only
 
 `/home/federated` now carries peer-authored statuses. The client still sends no
