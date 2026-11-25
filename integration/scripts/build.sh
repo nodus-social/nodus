@@ -16,6 +16,10 @@
 # failure). It is deliberately opt-in: the web submodule is mid-flight at the
 # time of writing, and its working tree does not compile.
 #
+# The pinned commits are checked for composition first (`deploy/check-pins.sh`): a
+# ten-minute image build is a slow way to learn that two pins disagree. Pass
+# LAB_SKIP_PIN_CHECK=1 to skip it.
+#
 # LAB_DOCKER_BUILD_ARGS appends extra arguments to `docker compose build`
 # (word-split, so `--build-arg A=1 --build-arg B=2` works). CI uses it to pass
 # builder options without editing this script. Empty by default: the command is
@@ -49,6 +53,26 @@ for arg in "$@"; do
 done
 
 ensure_env
+
+# A docker build that dies on a compile error wastes ten minutes to learn what the pin
+# gate answers in one. That is not hypothetical: an SDK commit added an error variant,
+# nothing else in the set learned it, and this script found out at the `cargo build` step
+# while `deploy/check-pins.sh` would have said so in a minute. The gate is skipped when
+# asked (`LAB_SKIP_PIN_CHECK=1`) and when the context is a working tree rather than the
+# pins, since then there is no pin set to compose.
+if [ "${LAB_BUILD_FROM_WORKTREE:-0}" = 1 ]; then
+    printf 'pin gate: skipped (LAB_BUILD_FROM_WORKTREE=1 builds a working tree, not the pins)\n'
+elif [ "${LAB_SKIP_PIN_CHECK:-0}" = 1 ]; then
+    printf 'pin gate: skipped (LAB_SKIP_PIN_CHECK=1)\n'
+elif command -v cargo >/dev/null 2>&1 && [ -x "$INTEGRATION_DIR/../deploy/check-pins.sh" ]; then
+    if ! "$INTEGRATION_DIR/../deploy/check-pins.sh"; then
+        printf '\nthe pinned commits do not compose; nothing was built.\n' >&2
+        printf 'fix the pin or the code, or pass LAB_SKIP_PIN_CHECK=1 to build anyway.\n' >&2
+        exit 1
+    fi
+else
+    printf 'pin gate: skipped (cargo or deploy/check-pins.sh unavailable)\n'
+fi
 
 SUBMODULES="nodus-backend recommender sdk server-sdk web"
 BUILD_CONTEXT_DIR="$INTEGRATION_DIR/volumes/build-context"
