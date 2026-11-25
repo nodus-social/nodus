@@ -86,10 +86,17 @@ RUN npm ci --no-audit --no-fund --include=optional
 # resolved. Without it the tailwind 4 CLI cannot load its native plugin.
 RUN node -e "const {version} = require('./node_modules/@tailwindcss/oxide/package.json');\
 require('child_process').execSync('npm install --no-save --no-audit --no-fund @tailwindcss/oxide-linux-x64-gnu@' + version, {stdio: 'inherit'});"
+# `WASM_DEBUG_ASSERTIONS=1` keeps the framework's diagnostics in the wasm. Without it a
+# hydration mismatch panics as a bare `unreachable!()` — `tachys` compiles the sentence that
+# names the element, and the file:line that defined it, out of a plain release build. The
+# default is 0 so an ordinary image is unchanged; the diagnostic image is for looking, not
+# for serving: assertions cost size and speed.
+ARG WASM_DEBUG_ASSERTIONS=0
 RUN --mount=type=cache,target=/usr/local/cargo/registry,id=nodus-cargo-registry \
     --mount=type=cache,target=/usr/local/cargo/git,id=nodus-cargo-git \
     --mount=type=cache,target=/src/web/target,id=nodus-web-wasm-target \
-    node js/build.mjs && node js/css.mjs && trunk build --release \
+    node js/build.mjs && node js/css.mjs \
+ && CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=${WASM_DEBUG_ASSERTIONS} trunk build --release \
  && sh /src/deploy/precompress-bundle.sh /src/web/dist
 
 FROM debian:bookworm-slim AS runtime
