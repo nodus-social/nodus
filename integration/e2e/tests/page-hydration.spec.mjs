@@ -41,6 +41,21 @@
 // with that as the stated reason instead of being weakened to pass against a shell that
 // paints the old path.
 //
+// What the shell-adoption run answered on 2026-11-25 (web e44b009, switch on):
+// `/home` is the only page painted as a Leptos shell, and with `NODUS_TRY_HYDRATE=1` the
+// client adopts it without a panic — the two divergences the switch was waiting on are gone
+// (a status body painted inside `<p>` where the client nests a `<div>`, and a card painted
+// with empty verb slots where the client mounts the author's menu and the share button).
+// The switch still stays off by default, because an adopted rail has no notifications bell:
+// `capabilities-visual.spec.mjs` "an instance that omits admin, moderation and drive" and
+// "a Mastodon-shaped session..." both pass with the switch off and both fail with it on,
+// `[data-notice-bell]` never appearing. The shell paint decides that row from the
+// capability answer it has at paint time — which is the rule the nav guard exists to
+// forbid, absence from no answer rather than from a negative one — and the client then
+// adopts the painted rail instead of drawing its own after the probe. So the gate's next
+// owner is the rail: it must paint the bell row undecided and let the probe settle it, or
+// paint from a served capability answer the client also trusts.
+//
 // What the gate-lifted run answered on 2026-11-23: the pre-`pages` renderer assembles the
 // thread server-side and paints the same {"kind":"thread"} island, so "the island exists"
 // does not discriminate the new wiring; the browser made zero /api/v1/pages/ reads. On the
