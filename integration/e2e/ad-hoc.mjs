@@ -39,6 +39,10 @@ const path = arg('path', '/');
 const then = arg('then');
 const click = arg('click');
 const shot = arg('shot');
+// `--html <selector>` answers "which element is this, and what class makes it look
+// like that" — the question a screenshot raises and cannot settle.
+const html = arg('html');
+const htmlDepth = Number(arg('depth', 2));
 const wait = Number(arg('wait', 1500));
 const anonymous = argv.includes('--anon');
 
@@ -63,10 +67,10 @@ const page = await context.newPage();
 const noisy = [];
 page.on('console', (message) => {
   if (message.type() === 'error' || message.type() === 'warning') {
-    noisy.push(`${message.type()}: ${message.text().slice(0, 200)}`);
+    noisy.push(`${message.type()}: ${message.text().slice(0, 900)}`);
   }
 });
-page.on('pageerror', (error) => noisy.push(`pageerror: ${error.message.slice(0, 200)}`));
+page.on('pageerror', (error) => noisy.push(`pageerror: ${error.message.slice(0, 400)}`));
 const requests = [];
 page.on('request', (request) => {
   const url = new URL(request.url());
@@ -108,6 +112,25 @@ const report = {
   console: noisy.slice(0, 8),
 };
 console.log(JSON.stringify(report, null, 2));
+
+if (typeof html === 'string') {
+  const block = page.locator(html).first();
+  console.log(`--- ${html}`);
+  console.log(
+    (await block.evaluate((node, depth) => {
+      const trim = (el, level) => {
+        if (level > depth) return '';
+        const attrs = [...el.attributes]
+          .filter((a) => ['class', 'id', 'role', 'aria-label'].includes(a.name))
+          .map((a) => `${a.name}="${a.value}"`)
+          .join(' ');
+        const kids = level === depth ? '' : [...el.children].map((k) => trim(k, level + 1)).join('\n');
+        return `${'  '.repeat(level)}<${el.tagName.toLowerCase()}${attrs ? ` ${attrs}` : ''}>${kids}`;
+      };
+      return trim(node, 0);
+    }, htmlDepth)) ?? '(no attributes)',
+  );
+}
 
 if (typeof shot === 'string') {
   await page.screenshot({ path: shot, fullPage: true });
